@@ -79,8 +79,8 @@ app.post('/api/signup', (req, res) => {
 // 2. 로그인 API
 app.post('/api/login', (req, res) => {
   const { userId, password } = req.body;
-
-  const loginSql = 'SELECT userId, name FROM users WHERE userId = ? AND password = ?';
+  const loginSql = 'SELECT id, userId, name, role FROM users WHERE userId = ? AND password = ?';
+  
   db.query(loginSql, [userId, password], (err, results) => {
     if (err) {
       console.error(err);
@@ -89,8 +89,17 @@ app.post('/api/login', (req, res) => {
 
     if (results.length > 0) {
       const user = results[0];
-      console.log(`[MariaDB 로그인 성공] ${user.name}(${user.userId})님이 접속했습니다.`);
-      return res.json({ success: true, user: { userId: user.userId, name: user.name } });
+      console.log(`[MariaDB 로그인 성공] ${user.name}(${user.userId})님이 접속했습니다. 권한: ${user.role}`);
+      
+      return res.json({ 
+        success: true, 
+        user: { 
+          id: user.id,
+          userId: user.userId, 
+          name: user.name, 
+          role: user.role 
+        } 
+      });
     } else {
       return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 틀렸습니다.' });
     }
@@ -107,6 +116,39 @@ app.get('/api/products', (req, res) => {
     }
     // DB에서 가져온 상품 목록(results)을 프론트엔드로 전송
     return res.json({ success: true, products: results });
+  });
+});
+
+// 4. [관리자 전용] 상품 재고 1개 추가 API
+app.post('/api/products/restock', (req, res) => {
+  const { productId } = req.body;
+  const sql = 'UPDATE products SET stock = stock + 1 WHERE id = ?';
+  
+  db.query(sql, [productId], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: 'DB 오류 발생' });
+    }
+    return res.json({ success: true, message: '재고가 1개 추가되었습니다.' });
+  });
+});
+
+// 5. [관리자 전용] 새 상품(메뉴) 등록 API
+app.post('/api/products/add', (req, res) => {
+  const { name, price, stock, icon } = req.body;
+
+  // 유효성 검사
+  if (!name || !price || stock === undefined || !icon) {
+    return res.status(400).json({ success: false, message: '모든 항목을 입력해주세요.' });
+  }
+
+  const sql = 'INSERT INTO products (name, price, stock, icon) VALUES (?, ?, ?, ?)';
+  db.query(sql, [name, price, parseInt(stock), icon], (err, result) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: 'DB 오류 발생' });
+    }
+    return res.json({ success: true, message: '새 메뉴가 성공적으로 등록되었습니다!' });
   });
 });
 
