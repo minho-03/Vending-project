@@ -3,7 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const mysql = require('mysql2'); // ★ MariaDB/MySQL 연동 라이브러리 추가
+const mysql = require('mysql2');
 
 const app = express();
 app.use(cors());
@@ -24,8 +24,8 @@ const db = mysql.createConnection({
   host: '127.0.0.1',
   port: 3307,
   user: 'root',      
-  password: '',      // 👈 방금 비밀번호 초기화로 비워둔 값과 일치합니다!
-  database: 'vending_db' // 아까 터미널에서 CREATE DATABASE로 만든 이름
+  password: '',      
+  database: 'vending_db' 
 });
 
 db.connect((err) => {
@@ -36,14 +36,15 @@ db.connect((err) => {
   console.log('🟩 MariaDB 데이터베이스 연결 성공!');
 });
 
-let robotPosition = { x: 120, y: 180, status: 'IDLE' };
+// 🔋 [수정됨] 로봇 초기 상태에 배터리(battery: 100) 추가
+let robotPosition = { x: 120, y: 180, status: 'IDLE', battery: 100 };
 let intervalId = null;
 
 // ==========================================
 // 🔐 [HTTP REST API] 진짜 DB 연동 회원가입 & 로그인
 // ==========================================
 
-// 1. 회원가입 API (DB에 새 유저 삽입)
+// 1. 회원가입 API
 app.post('/api/signup', (req, res) => {
   const { userId, password, name } = req.body;
   
@@ -51,7 +52,6 @@ app.post('/api/signup', (req, res) => {
     return res.status(400).json({ success: false, message: '모든 항목을 입력해주세요.' });
   }
 
-  // 중복 아이디 검사 (SQL 쿼리문)
   const checkSql = 'SELECT * FROM users WHERE userId = ?';
   db.query(checkSql, [userId], (err, results) => {
     if (err) {
@@ -63,7 +63,6 @@ app.post('/api/signup', (req, res) => {
       return res.status(400).json({ success: false, message: '이미 존재하는 아이디입니다.' });
     }
 
-    // 중복이 없으면 진짜 DB 테이블에 저장 (INSERT)
     const insertSql = 'INSERT INTO users (userId, password, name) VALUES (?, ?, ?)';
     db.query(insertSql, [userId, password, name], (err, result) => {
       if (err) {
@@ -77,11 +76,10 @@ app.post('/api/signup', (req, res) => {
   });
 });
 
-// 2. 로그인 API (DB에서 유저 조회)
+// 2. 로그인 API
 app.post('/api/login', (req, res) => {
   const { userId, password } = req.body;
 
-  // 입력한 아이디와 비밀번호가 일치하는 유저 찾기 (SELECT)
   const loginSql = 'SELECT userId, name FROM users WHERE userId = ? AND password = ?';
   db.query(loginSql, [userId, password], (err, results) => {
     if (err) {
@@ -99,8 +97,21 @@ app.post('/api/login', (req, res) => {
   });
 });
 
+// 3. 상품 목록 및 재고 조회 API (새로 추가!)
+app.get('/api/products', (req, res) => {
+  const sql = 'SELECT * FROM products';
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: 'DB 오류 발생' });
+    }
+    // DB에서 가져온 상품 목록(results)을 프론트엔드로 전송
+    return res.json({ success: true, products: results });
+  });
+});
+
 // ==========================================
-// 🤖 [Socket.io] 로봇 제어 로직 (기존 유지)
+// 🤖 [Socket.io] 로봇 제어 로직 (배터리 소모 적용)
 // ==========================================
 io.on('connection', (socket) => {
   console.log('클라이언트 연결됨:', socket.id);
@@ -116,11 +127,16 @@ io.on('connection', (socket) => {
       let dy = targetPos.y - robotPosition.y;
       let distance = Math.sqrt(dx * dx + dy * dy);
 
+      // 🔋 [수정됨] 이동 중에는 배터리가 0.3씩 소모되도록 처리
+      if (robotPosition.battery > 0) {
+        robotPosition.battery = Math.max(0, Number((robotPosition.battery - 0.1).toFixed(1)));
+      }
+
       if (distance < 5) {
         clearInterval(intervalId);
         robotPosition.x = targetPos.x;
         robotPosition.y = targetPos.y;
-        robotPosition.status = 'ARRIVED';
+        robotPosition.status = 'ARRIVED'; // 🏁 도착 상태
         io.emit('robot_position', robotPosition);
       } else {
         robotPosition.x += (dx / distance) * 4;
