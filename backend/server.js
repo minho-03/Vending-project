@@ -36,8 +36,8 @@ db.connect((err) => {
   console.log('🟩 MariaDB 데이터베이스 연결 성공!');
 });
 
-// 🔋 [수정됨] 로봇 초기 상태에 배터리(battery: 100) 추가
-let robotPosition = { x: 120, y: 180, status: 'IDLE', battery: 100 };
+// 🔋 [수정] 로봇이 현재 처리 중인 상품 ID(currentProductId) 상태 추가
+let robotPosition = { x: 120, y: 180, status: 'IDLE', battery: 100, currentProductId: null };
 let intervalId = null;
 
 // ==========================================
@@ -106,7 +106,7 @@ app.post('/api/login', (req, res) => {
   });
 });
 
-// 3. 상품 목록 및 재고 조회 API (새로 추가!)
+// 3. 상품 목록 및 재고 조회 API
 app.get('/api/products', (req, res) => {
   const sql = 'SELECT * FROM products';
   db.query(sql, (err, results) => {
@@ -114,7 +114,6 @@ app.get('/api/products', (req, res) => {
       console.error(err);
       return res.status(500).json({ success: false, message: 'DB 오류 발생' });
     }
-    // DB에서 가져온 상품 목록(results)을 프론트엔드로 전송
     return res.json({ success: true, products: results });
   });
 });
@@ -137,7 +136,6 @@ app.post('/api/products/restock', (req, res) => {
 app.post('/api/products/add', (req, res) => {
   const { name, price, stock, icon } = req.body;
 
-  // 유효성 검사
   if (!name || !price || stock === undefined || !icon) {
     return res.status(400).json({ success: false, message: '모든 항목을 입력해주세요.' });
   }
@@ -152,16 +150,71 @@ app.post('/api/products/add', (req, res) => {
   });
 });
 
+// 6. ✨ [신규 추가] 사용자 물건 최종 수령 시 실제 DB 재고 차감 API
+app.post('/api/products/purchase-complete', (req, res) => {
+  const productId = robotPosition.currentProductId;
+
+  if (!productId) {
+    return res.status(400).json({ success: false, message: '현재 처리 중인 음료 주문이 없습니다.' });
+  }
+
+  // 재고가 0보다 클 때만 1 감소 시키는 쿼리
+  const sql = 'UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0';
+  
+  db.query(sql, [productId], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: '재고 반영 중 DB 오류가 발생했습니다.' });
+    }
+
+    if (results.affectedRows === 0) {
+      return res.status(400).json({ success: false, message: '상품 재고가 부족하거나 존재하지 않습니다.' });
+    }
+
+    console.log(`[재고 차감 완료] 상품 ID: ${productId}의 재고가 1개 감소했습니다.`);
+    
+    // 비즈니스 로직 종료 후 로봇의 현재 실은 상품 초기화
+    robotPosition.currentProductId = null;
+    
+    return res.json({ success: true, message: '재고 차감 및 수령 처리가 완료되었습니다.' });
+  });
+});
+// 7. [관리자 전용] 상품 완전히 삭제 API (추가)
+app.post('/api/products/delete', (req, res) => {
+  const { productId } = req.body;
+
+  if (!productId) {
+    return res.status(400).json({ success: false, message: '삭제할 상품 ID가 없습니다.' });
+  }
+
+  // DB에서 해당 ID의 상품을 완전히 지우는 쿼리
+  const sql = 'DELETE FROM products WHERE id = ?';
+  
+  db.query(sql, [productId], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: 'DB 오류로 상품을 삭제하지 못했습니다.' });
+    }
+    
+    return res.json({ success: true, message: '상품이 메뉴판에서 완전히 삭제되었습니다.' });
+  });
+});
+
 // ==========================================
-// 🤖 [Socket.io] 로봇 제어 로직 (배터리 소모 적용)
+// 🤖 [Socket.io] 로봇 제어 로직 (배터리 소모 및 주문 연동)
 // ==========================================
 io.on('connection', (socket) => {
   console.log('클라이언트 연결됨:', socket.id);
   socket.emit('robot_position', robotPosition);
 
-  socket.on('call_robot', (targetPos) => {
+  // 💡 데이터 구조를 객체 { targetPos, productId } 형태로 확장 수신
+  socket.on('call_robot', (data) => {
+    const { targetPos, productId } = data;
+
     if (intervalId) clearInterval(intervalId);
+    
     robotPosition.status = 'MOVING';
+    robotPosition.currentProductId = productId; // 로봇에 매핑
     io.emit('robot_position', robotPosition);
 
     intervalId = setInterval(() => {
@@ -169,7 +222,6 @@ io.on('connection', (socket) => {
       let dy = targetPos.y - robotPosition.y;
       let distance = Math.sqrt(dx * dx + dy * dy);
 
-      // 🔋 [수정됨] 이동 중에는 배터리가 0.3씩 소모되도록 처리
       if (robotPosition.battery > 0) {
         robotPosition.battery = Math.max(0, Number((robotPosition.battery - 0.1).toFixed(1)));
       }
@@ -178,7 +230,7 @@ io.on('connection', (socket) => {
         clearInterval(intervalId);
         robotPosition.x = targetPos.x;
         robotPosition.y = targetPos.y;
-        robotPosition.status = 'ARRIVED'; // 🏁 도착 상태
+        robotPosition.status = 'ARRIVED'; 
         io.emit('robot_position', robotPosition);
       } else {
         robotPosition.x += (dx / distance) * 4;
