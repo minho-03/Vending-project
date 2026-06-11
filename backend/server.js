@@ -1,4 +1,3 @@
-// backend/server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -21,10 +20,10 @@ db.connect((err) => {
   console.log('🟩 MariaDB 데이터베이스 연결 성공!');
 });
 
-// 🔋 [로봇 상태 확장] heading(바라보는 각도) 추가됨!
+// 🔋 로봇 상태 객체
 let robotPosition = { 
   x: 50, y: 50, 
-  heading: 0,      // 🧭 추가됨: 로봇이 바라보는 방향 (라디안 각도)
+  heading: 0,
   status: 'IDLE', battery: 100, 
   currentProductId: null,
   path: [], obstacles: []
@@ -65,7 +64,19 @@ app.post('/api/products/add', (req, res) => {
   db.query('INSERT INTO products (name, price, stock, icon) VALUES (?, ?, ?, ?)', [name, price, stock, icon], () => res.json({ success: true }));
 });
 
-// 🥤 [수정됨] 음료 수령 완료 시 -> 재고를 깎고 판매 이력(orders) 테이블에 동시에 저장
+// 🗑️ [누락 수정 1] 상품 완전히 삭제하는 API 추가
+app.post('/api/products/delete', (req, res) => {
+  const { productId } = req.body;
+  db.query('DELETE FROM products WHERE id = ?', [productId], (err, results) => {
+    if (err) {
+      console.error('삭제 오류:', err);
+      return res.status(500).json({ success: false, message: 'DB 오류' });
+    }
+    return res.json({ success: true });
+  });
+});
+
+// 음료 수령 완료 -> 판매 이력 적재
 app.post('/api/products/purchase-complete', (req, res) => {
   const productId = robotPosition.currentProductId;
   if (!productId) return res.status(400).json({ success: false });
@@ -73,24 +84,19 @@ app.post('/api/products/purchase-complete', (req, res) => {
   db.query('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0', [productId], (err, results) => {
     if (results.affectedRows === 0) return res.status(400).json({ success: false });
     
-    // 📊 [신규 로직] 해당 상품 정보를 서브쿼리로 읽어와서 orders 테이블에 한 줄 쌓기
     db.query('INSERT INTO orders (product_id, price) SELECT id, price FROM products WHERE id = ?', [productId], (orderErr) => {
-      if (orderErr) console.error('❌ 판매 이력 누계 오류:', orderErr);
-      
       robotPosition.currentProductId = null;
       return res.json({ success: true });
     });
   });
 });
 
-// 📊 [신규 추가] 관리자 전용 통계 데이터 조회 API (총 매출액, 최다 판매 음료)
+// 통계 데이터 조회 API
 app.get('/api/admin/stats', (req, res) => {
-  // 1. 총 매출액 합산 쿼리
   db.query('SELECT IFNULL(SUM(price), 0) AS total_revenue FROM orders', (err, revResults) => {
     if (err) return res.status(500).json({ success: false });
     const totalRevenue = revResults[0].total_revenue;
 
-    // 2. 가장 많이 팔린 음료 Top 1 쿼리
     db.query(`
       SELECT p.name, COUNT(o.id) AS sales_count 
       FROM orders o 
@@ -100,36 +106,31 @@ app.get('/api/admin/stats', (req, res) => {
       LIMIT 1
     `, (err, bestResults) => {
       if (err) return res.status(500).json({ success: false });
-      
-      const bestSeller = bestResults.length > 0 
-        ? `${bestResults[0].name} (${bestResults[0].sales_count}개)` 
-        : '아직 없음';
-        
+      const bestSeller = bestResults.length > 0 ? `${bestResults[0].name} (${bestResults[0].sales_count}개)` : '기록 없음';
       return res.json({ success: true, totalRevenue, bestSeller });
     });
   });
 });
 
-// 🚨 [신규 추가] 관리자 전용 로봇 시스템 강제 제어 및 홈 복귀 API
+// 🚨 [동작 수정 2] 강제 리셋 API 보완 (참조 꼬임 방지)
 app.post('/api/admin/robot/force-reset', (req, res) => {
-  // 주행 중이던 인터벌 스케줄러가 있다면 완벽히 파괴
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
   }
   
-  // 로봇의 모든 상태값을 태초의 상태(대기중, 배터리 100%, 50px,50px 좌표)로 즉시 초기화
-  robotPosition = { 
-    x: 50, y: 50, 
-    heading: 0,
-    status: 'IDLE', battery: 100, 
-    currentProductId: null,
-    path: [], obstacles: []
-  };
+  // 새 객체를 덮어씌우지 않고 내부 속성값만 확실하게 초기화 (좀비 주행 완벽 차단)
+  robotPosition.x = 50;
+  robotPosition.y = 50;
+  robotPosition.heading = 0;
+  robotPosition.status = 'IDLE';
+  robotPosition.battery = 100;
+  robotPosition.currentProductId = null;
+  robotPosition.path = [];
+  robotPosition.obstacles = [];
 
-  // 실시간으로 관제 중인 모든 클라이언트(유저 지도 뷰어 등)에 전송하여 강제 동기화
   io.emit('robot_position', robotPosition);
-  console.log("🚨 [ADMIN COMMAND] 로봇이 관리자에 의해 강제 리셋 및 복귀되었습니다.");
+  console.log("🚨 [ADMIN COMMAND] 로봇 강제 리셋 및 초기 위치 복귀 완료!");
   return res.json({ success: true });
 });
 
@@ -138,7 +139,10 @@ io.on('connection', (socket) => {
 
   socket.on('call_robot', (data) => {
     const { targetPos, productId } = data;
-    if (intervalId) clearInterval(intervalId);
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
     
     robotPosition.status = 'MOVING';
     robotPosition.currentProductId = productId;
@@ -154,15 +158,18 @@ io.on('connection', (socket) => {
     io.emit('robot_position', robotPosition);
 
     intervalId = setInterval(() => {
+      // 로봇 상태가 MOVING이 아니면 (강제 리셋을 당했으면) 스스로 인터벌 즉시 종료
+      if (robotPosition.status !== 'MOVING') {
+        clearInterval(intervalId);
+        intervalId = null;
+        return;
+      }
+
       let dx = targetPos.x - robotPosition.x;
       let dy = targetPos.y - robotPosition.y;
       let distance = Math.sqrt(dx * dx + dy * dy);
 
-      // 🧭 [추가됨] 목적지를 향하는 각도(Heading) 계산
-      if (distance > 0.5) {
-        robotPosition.heading = Math.atan2(dy, dx);
-      }
-
+      if (distance > 0.5) robotPosition.heading = Math.atan2(dy, dx);
       if (robotPosition.battery > 0) robotPosition.battery = Math.max(0, Number((robotPosition.battery - 0.1).toFixed(1)));
 
       robotPosition.obstacles = MOCK_MAP_OBSTACLES.filter(obs => {
@@ -172,6 +179,7 @@ io.on('connection', (socket) => {
 
       if (distance < 5) {
         clearInterval(intervalId);
+        intervalId = null;
         robotPosition.x = targetPos.x;
         robotPosition.y = targetPos.y;
         robotPosition.status = 'ARRIVED'; 
