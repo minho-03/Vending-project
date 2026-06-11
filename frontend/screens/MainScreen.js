@@ -24,14 +24,14 @@ export default function MainScreen({ user, setUser }) {
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
 
-  // --- 🌐 [2번: ROS RViz 감성 디테일 관제 맵 웹뷰] ---
+  // --- 🌐 [수정] 밝은 톤(화이트 테마)에 맞춘 관제 맵 HTML/CSS 설정 ---
   const mapHtml = `
     <!DOCTYPE html>
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
       <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #0f111a; overflow: hidden; touch-action: none; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #ffffff; overflow: hidden; touch-action: none; }
         canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
         canvas:active { cursor: grabbing; }
       </style>
@@ -42,7 +42,6 @@ export default function MainScreen({ user, setUser }) {
         const canvas = document.getElementById('mapCanvas');
         const ctx = canvas.getContext('2d');
 
-        // 내부 상태 (현재 렌더링용 & 서버 수신용 분리하여 부드러운 보간 적용)
         let currentRobot = { x: 50, y: 50, heading: 0 };
         let targetRobot = { x: 50, y: 50, heading: 0 };
         let state = { targetX: 50, targetY: 50, path: [], obstacles: [] };
@@ -60,7 +59,6 @@ export default function MainScreen({ user, setUser }) {
         window.addEventListener('resize', resize);
         resize();
 
-        // 데이터 수신
         function handleMessage(event) {
           try {
             const newData = JSON.parse(event.data);
@@ -77,7 +75,6 @@ export default function MainScreen({ user, setUser }) {
         window.addEventListener('message', handleMessage);
         document.addEventListener('message', handleMessage);
 
-        // 제스처 및 마우스 핸들러
         canvas.addEventListener('mousedown', (e) => {
           isMoved = false; isDragging = true;
           touchStartX = e.clientX; touchStartY = e.clientY;
@@ -133,82 +130,76 @@ export default function MainScreen({ user, setUser }) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_CLICK', x: worldX, y: worldY }));
         }
 
-        // 60fps 부드러운 관제 그리그 루프 (러닝 보간 알고리즘 적용)
         function updateAndDraw() {
-          // 로봇 위치를 실시간으로 부드럽게 보간 (Lerp)
           currentRobot.x += (targetRobot.x - currentRobot.x) * 0.15;
           currentRobot.y += (targetRobot.y - currentRobot.y) * 0.15;
           
-          // 각도 회전 보간 처리
           let diff = targetRobot.heading - currentRobot.heading;
           while (diff < -Math.PI) diff += Math.PI * 2;
           while (diff > Math.PI) diff -= Math.PI * 2;
           currentRobot.heading += diff * 0.15;
 
-          // 그리기
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.save();
           ctx.translate(camera.x, camera.y);
           ctx.scale(camera.scale, camera.scale);
 
-          // 1. ROS 스타일 디지털 격자 및 좌표 수치 표현
+          // 🎨 [변경] 흰색 배경에 잘 보이는 연한 연갈색 격자선과 어두운 갈색 글씨로 매핑
           const gridSize = 50;
-          ctx.strokeStyle = '#1a1c2a'; ctx.lineWidth = 1 / camera.scale;
-          ctx.fillStyle = '#414868'; ctx.font = \`\${10 / camera.scale}px sans-serif\`;
+          ctx.strokeStyle = '#ede8e0'; ctx.lineWidth = 1 / camera.scale;
+          ctx.fillStyle = '#9e8c7a'; ctx.font = \`\${10 / camera.scale}px sans-serif\`;
 
           for (let x = -1000; x < 2000; x += gridSize) {
             ctx.beginPath(); ctx.moveTo(x, -1000); ctx.lineTo(x, 2000); ctx.stroke();
-            if (x % 100 === 0 && x !== 0) ctx.fillText(x, x + 2, 12); // X축 좌표 라벨링
+            if (x % 100 === 0 && x !== 0) ctx.fillText(x, x + 2, 12); 
           }
           for (let y = -1000; y < 2000; y += gridSize) {
             ctx.beginPath(); ctx.moveTo(-1000, y); ctx.lineTo(2000, y); ctx.stroke();
-            if (y % 100 === 0 && y !== 0) ctx.fillText(y, 2, y - 2); // Y축 좌표 라벨링
+            if (y % 100 === 0 && y !== 0) ctx.fillText(y, 2, y - 2); 
           }
 
-          // 2. 오리진 정밀 십자선 (0, 0 마크)
-          ctx.strokeStyle = '#ff5370'; ctx.lineWidth = 2 / camera.scale;
+          // 📍 원점 십자 마커 (연한 감성 브라운)
+          ctx.strokeStyle = '#c47d4a'; ctx.lineWidth = 2 / camera.scale;
           ctx.beginPath(); ctx.moveTo(-15, 0); ctx.lineTo(15, 0); ctx.moveTo(0, -15); ctx.lineTo(0, 15); ctx.stroke();
 
-          // 3. 글로벌 고해상도 경로선
+          // 🛣️ 글로벌 경로선 (차분한 그린 라인)
           if (state.path && state.path.length > 0) {
-            ctx.strokeStyle = '#00ff9d'; ctx.lineWidth = 2.5 / camera.scale;
+            ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2.5 / camera.scale;
             ctx.setLineDash([3, 3]);
             ctx.beginPath(); ctx.moveTo(currentRobot.x, currentRobot.y);
             state.path.forEach(pt => ctx.lineTo(pt.x, pt.y));
             ctx.lineTo(state.targetX, state.targetY); ctx.stroke(); ctx.setLineDash([]);
           }
 
-          // 4. 라이다 센서 장애물 포인트 영역 (글로우 효과 추가)
+          // ⚠️ 라이다 센서 장애물 포인트
           if (state.obstacles && state.obstacles.length > 0) {
             state.obstacles.forEach(obs => {
-              ctx.fillStyle = '#ff2a5f'; ctx.shadowColor = '#ff2a5f'; ctx.shadowBlur = 6;
+              ctx.fillStyle = '#ef4444'; ctx.shadowColor = 'rgba(239, 68, 68, 0.3)'; ctx.shadowBlur = 4;
               ctx.beginPath(); ctx.arc(obs.x, obs.y, 4, 0, Math.PI * 2); ctx.fill();
             });
             ctx.shadowBlur = 0;
           }
 
-          // 5. 실시간 목적지 웨이포인트 플래그
-          ctx.fillStyle = '#ff9e64'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 / camera.scale;
+          // 🚩 목적지 핀 웨이포인트 (오렌지 마커)
+          ctx.fillStyle = '#f97316'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 / camera.scale;
           ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-          // 목적지 핑 파동 효과
-          ctx.strokeStyle = 'rgba(255, 158, 100, 0.4)';
+          ctx.strokeStyle = 'rgba(249, 115, 22, 0.3)';
           ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 12, 0, Math.PI * 2); ctx.stroke();
 
-          // 6. 🤖 자율주행 AGV 로봇 에이전트 외형 정밀화
+          // 🤖 [변경] 자율주행 AGV 로봇 에이전트를 앱 메인 컬러(브라운 테마 #c47d4a)로 통일!
           ctx.save();
           ctx.translate(currentRobot.x, currentRobot.y);
           ctx.rotate(currentRobot.heading);
 
-          // 로봇 하우징 그림자 및 바디
-          ctx.fillStyle = '#2ac3de'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2 / camera.scale;
+          ctx.fillStyle = '#c47d4a'; ctx.strokeStyle = '#3d2c1e'; ctx.lineWidth = 2 / camera.scale;
           ctx.beginPath(); ctx.arc(0, 0, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
-          // 전방 지향성 헤드 라이트 노즈 모듈
-          ctx.fillStyle = '#ff9e64';
+          // 로봇 방향 지시 노즈 (진한 갈색)
+          ctx.fillStyle = '#3d2c1e';
           ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(3, -6); ctx.lineTo(3, 6); ctx.fill();
 
-          // 실시간 라이다 탐지 반경 가이드라인
-          ctx.strokeStyle = 'rgba(42, 195, 222, 0.25)'; ctx.lineWidth = 1 / camera.scale;
+          // 실시간 라이다 센서 반경 가이드라인
+          ctx.strokeStyle = 'rgba(196, 125, 74, 0.15)'; ctx.lineWidth = 1 / camera.scale;
           ctx.beginPath(); ctx.arc(0, 0, 50, 0, Math.PI * 2); ctx.setLineDash([2, 4]); ctx.stroke();
 
           ctx.restore();
@@ -217,7 +208,6 @@ export default function MainScreen({ user, setUser }) {
           requestAnimationFrame(updateAndDraw);
         }
         
-        // 첫 애니메이션 루프 가동
         requestAnimationFrame(updateAndDraw);
       </script>
     </body>
@@ -305,7 +295,6 @@ export default function MainScreen({ user, setUser }) {
             <TouchableOpacity style={styles.logoutButton} onPress={() => setUser(null)}><Text style={styles.logoutButtonText}>로그아웃</Text></TouchableOpacity>
           </View>
           
-          {/* 3번: 진짜 자판기처럼 - 현재 선택된 음료 노출 디테일 */}
           <View style={{ marginTop: 8, padding: 8, backgroundColor: '#f5f6f8', borderRadius: 6 }}>
             <Text style={{ color: '#4c4f69', fontWeight: 'bold', fontSize: 13 }}>
               🥤 투입된 음료 선택 상태: {selectedProduct ? `${selectedProduct.icon} ${selectedProduct.name} (선택됨)` : '❌ 상품을 선택해 주세요'}
@@ -321,22 +310,22 @@ export default function MainScreen({ user, setUser }) {
           </View>
         </View>
 
-        {/* 2번: 정밀 지도 메인 판넬 */}
+        {/* 📡 1. [수정] 지도 하드코딩 스타일 제거 -> MainStyles.js의 하얀 배경과 완벽 동기화 */}
         <Text style={styles.sectionTitle}>📡 ROS LiDAR 격자 맵</Text>
-        <View style={[styles.mapContainer, { overflow: 'hidden', backgroundColor: '#0f111a', borderWidth: 1, borderColor: '#232433' }]}>
+        <View style={styles.mapContainer}>
           <WebView
             ref={webViewRef}
             originWhitelist={['*']}
             source={{ html: mapHtml }}
             onMessage={handleWebViewMessage}
-            style={{ flex: 1 }}
+            style={{ flex: 1, backgroundColor: 'transparent' }} // 배경 투명 처리로 컨테이너 테두리 보존
             scrollEnabled={false}
             javaScriptEnabled={true}
           />
         </View>
         <Text style={styles.tipText}>💡 마우스 휠 또는 멀티터치로 줌인/아웃이 유연하게 연동됩니다.</Text>
 
-        {/* 3번: 진짜 자판기 하단 제어부 인터페이스 */}
+        {/* 🛠️ 2. [수정] 하단 제어부 파란색 하드코딩 제거 -> 베이지 테마로 일괄 자동 통일 */}
         <View style={styles.controlPanel}>
           <View style={styles.coordInfoRow}>
             <Text style={styles.coordLabel}>하차 지정 좌표 (Target)</Text>
@@ -348,11 +337,15 @@ export default function MainScreen({ user, setUser }) {
           </TouchableOpacity>
           
           <View style={styles.subButtonRow}>
-            <TouchableOpacity style={[styles.subButton, { backgroundColor: '#7aa2f7' }]} onPress={fetchProducts}>
-              <Text style={[styles.subButtonText, { color: '#fff' }]}>🛒 자판기 메뉴판</Text>
+            {/* ⭕ 파란색 오버라이드를 빼서 우측 QR 버튼과 완벽하게 똑같은 베이지색 톤으로 통일 완료! */}
+            <TouchableOpacity style={styles.subButton} onPress={fetchProducts}>
+              <Text style={styles.subButtonText}>🛒 자판기 메뉴판</Text>
             </TouchableOpacity>
+            
             <TouchableOpacity style={[styles.subButton, qrValue ? styles.qrActiveButton : null]} onPress={handleQRButtonPress}>
-              <Text style={[styles.subButtonText, qrValue ? styles.qrActiveText : null]}>{qrValue ? "📱 인증용 QR 보기" : "💳 결제 및 발급"}</Text>
+              <Text style={[styles.subButtonText, qrValue ? styles.qrActiveText : null]}>
+                {qrValue ? "📱 인증용 QR 보기" : "💳 결제 및 발급"}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>

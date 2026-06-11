@@ -14,7 +14,18 @@ export default StyleSheet.create({
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#c47d4a' },
   statusText: { color: '#7a5a3a', fontSize: 11, fontWeight: '600' },
   sectionTitle: { fontSize: 14, fontWeight: '700', color: '#3d2c1e', marginBottom: 10 },
-  mapContainer: { flex: 1, minHeight: 300, backgroundColor: '#ede8e0', borderRadius: 16, overflow: 'hidden', position: 'relative', borderWidth: 1, borderColor: '#e0d8cc' },
+  
+  mapContainer: { 
+    flex: 1, 
+    minHeight: 300, 
+    backgroundColor: '#ffffff',
+    borderRadius: 16, 
+    overflow: 'hidden', 
+    position: 'relative', 
+    borderWidth: 1, 
+    borderColor: '#e0d8cc' 
+  },
+  
   mapImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   robot: { position: 'absolute', width: 26, height: 26, borderRadius: 13, backgroundColor: '#c47d4a', borderWidth: 3, borderColor: '#faf8f4', zIndex: 2 },
   targetDot: { position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: '#3d2c1e', zIndex: 1, opacity: 0.5 },
@@ -52,32 +63,10 @@ export default StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e8dfd4',
   },
-  productIcon: {
-    fontSize: 28,
-    marginRight: 14,
-  },
-  productInfo: {
-    flex: 1,
-  },
-  productName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#3d2c1e',
-    marginBottom: 4,
-  },
-  productPrice: {
-    fontSize: 13,
-    color: '#9e8c7a',
-  },
-  stockBadge: {
-    backgroundColor: '#f5ede0',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  stockText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#c47d4a',
-  },
+  productIcon: { fontSize: 28, marginRight: 14 },
+  productInfo: { flex: 1 },
+  productName: { fontSize: 15, fontWeight: '700', color: '#3d2c1e', marginBottom: 4 },
+  productPrice: { fontSize: 13, color: '#9e8c7a' },
+  stockBadge: { backgroundColor: '#f5ede0', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  stockText: { fontSize: 12, fontWeight: '700', color: '#c47d4a' },
 });
