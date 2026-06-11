@@ -6,7 +6,7 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.63:4000';
+const SERVER_URL = 'http://192.168.0.10:4000';
 
 export default function MainScreen({ user, setUser }) {
   const [status, setStatus] = useState('IDLE');
