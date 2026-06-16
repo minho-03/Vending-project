@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -31,7 +32,7 @@ let robotPosition = {
 };
 let intervalId = null;
 
-// 📋 [신규] 주문 대기열 시스템을 위한 배열 선언
+// 📋 주문 대기열 시스템을 위한 배열 선언
 let orderQueue = [];
 
 const MOCK_MAP_OBSTACLES = [
@@ -39,14 +40,13 @@ const MOCK_MAP_OBSTACLES = [
   { x: 200, y: 250 }, { x: 205, y: 255 }, { x: 210, y: 260 }
 ];
 
-// 🚙 [재설계] 로봇 주행 핵심 함수 (배달 및 복귀 공용 사용)
+// 🚙 로봇 주행 핵심 함수 (배달 및 복귀 공용 사용)
 function driveRobotTo(targetPos, productId, isReturn = false) {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
   }
 
-  // 복귀 중인지, 배달 중인지 상태 세팅
   robotPosition.status = isReturn ? 'RETURNING' : 'MOVING';
   robotPosition.currentProductId = productId;
   robotPosition.path = [];
@@ -61,7 +61,6 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
   io.emit('robot_position', robotPosition);
 
   intervalId = setInterval(() => {
-    // 🛡️ 철통 방어: 현재 상태가 주행 관련 상태가 아니면 인터벌 즉시 종료
     if (robotPosition.status !== 'MOVING' && robotPosition.status !== 'RETURNING') {
       clearInterval(intervalId);
       intervalId = null;
@@ -89,12 +88,10 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
       robotPosition.obstacles = [];
 
       if (isReturn) {
-        // 복귀 완료 시 -> IDLE 상태로 전환 후 밀린 대기열이 있는지 최종 체크
         robotPosition.status = 'IDLE';
         console.log("🏠 로봇이 무사히 홈 기지에 복귀했습니다.");
         checkAndProcessQueue();
       } else {
-        // 배달 완료 시 -> 수령 대기 상태로 전환
         robotPosition.status = 'ARRIVED'; 
         console.log("📍 로봇이 목적지에 도착했습니다. 손님의 수령을 기다립니다.");
       }
@@ -110,11 +107,11 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
   }, 150);
 }
 
-// 📦 [신규] 대기열 확인 및 다음 주문 처리 함수
+// 📦 대기열 확인 및 다음 주문 처리 함수
 function checkAndProcessQueue() {
   if (orderQueue.length > 0) {
-    const nextOrder = orderQueue.shift(); // 맨 앞 주문 꺼내기
-    io.emit('queue_updated', orderQueue); // 앱들에게 갱신된 대기열 전송
+    const nextOrder = orderQueue.shift(); 
+    io.emit('queue_updated', orderQueue); 
     console.log(`🚀 대기열에서 주문을 꺼내 출발합니다! (남은 대기: ${orderQueue.length}개)`);
     driveRobotTo(nextOrder.targetPos, nextOrder.productId, false);
   }
@@ -156,28 +153,52 @@ app.post('/api/products/delete', (req, res) => {
   db.query('DELETE FROM products WHERE id = ?', [productId], () => res.json({ success: true }));
 });
 
-// 🔄 [수정] 음료 수령 완료 API -> 대기열 파이프라인 연결
+// 🔄 [완전 수정] 음료 수령 완료 API -> 다중 선택 수량(quantity) 완벽 반영 및 일괄 인서트 처리
 app.post('/api/products/purchase-complete', (req, res) => {
-  const productId = robotPosition.currentProductId;
-  if (!productId) return res.status(400).json({ success: false });
+  // 프론트엔드가 body로 쏴준 내역을 명확하게 구조분해 할당으로 추출
+  const { productId, quantity } = req.body;
   
-  db.query('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0', [productId], (err, results) => {
-    if (results.affectedRows === 0) return res.status(400).json({ success: false });
+  const targetProductId = productId || robotPosition.currentProductId;
+  const targetQuantity = parseInt(quantity, 10) || 1; // 안전을 위해 정수 변환 및 기본값 방어
+
+  if (!targetProductId) return res.status(400).json({ success: false, message: "상품 정보가 유실되었습니다." });
+  
+  // 1️⃣ 하드코딩된 'stock - 1' 대신 'stock - ?' 로 변경하고 보유 재고가 살 수량 이상인지 체크
+  db.query('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', [targetQuantity, targetProductId, targetQuantity], (err, results) => {
+    if (err || results.affectedRows === 0) return res.status(400).json({ success: false, message: "재고가 부족하여 처리가 불가능합니다." });
     
-    db.query('INSERT INTO orders (product_id, price) SELECT id, price FROM products WHERE id = ?', [productId], (orderErr) => {
+    // 2️⃣ orders 통계 테이블에 산 개수만큼 이력을 남기기 위해 단가(price)를 가져옴
+    db.query('SELECT price FROM products WHERE id = ?', [targetProductId], (priceErr, priceResults) => {
+      if (priceErr || priceResults.length === 0) return res.status(500).json({ success: false });
       
-      robotPosition.currentProductId = null;
+      const productPrice = priceResults[0].price;
       
-      // 💡 수령 완료되었으니 대기열 확인!
-      if (orderQueue.length > 0) {
-        checkAndProcessQueue();
-      } else {
-        // 대기 주문이 없으면 자동으로 홈(0, 0)으로 복귀 주행 시작
-        console.log("💤 대기 주문이 없습니다. 홈 기지로 복귀합니다.");
-        driveRobotTo({ x: 0, y: 0 }, null, true);
+      // 3️⃣ 구매 개수(targetQuantity)만큼 대량 인서트(Bulk Insert)를 위한 2차원 배열 데이터 가공
+      // 예시 구조: [ [productId, price], [productId, price] ]
+      const bulkOrderData = [];
+      for (let i = 0; i < targetQuantity; i++) {
+        bulkOrderData.push([targetProductId, productPrice]);
       }
 
-      return res.json({ success: true });
+      // mysql2의 대량 인서트 전용 문법 (VALUES ?) 연동
+      db.query('INSERT INTO orders (product_id, price) VALUES ?', [bulkOrderData], (orderErr) => {
+        if (orderErr) {
+          console.error("❌ 주문 내역 인서트 중 오류 발생:", orderErr);
+          return res.status(500).json({ success: false });
+        }
+
+        robotPosition.currentProductId = null;
+        
+        // 💡 배송 프로세스 종료 후 대기열 파이프라인 트리거
+        if (orderQueue.length > 0) {
+          checkAndProcessQueue();
+        } else {
+          console.log("💤 대기 주문이 없습니다. 홈 기지로 복귀합니다.");
+          driveRobotTo({ x: 0, y: 0 }, null, true);
+        }
+
+        return res.json({ success: true });
+      });
     });
   });
 });
@@ -202,14 +223,12 @@ app.get('/api/admin/stats', (req, res) => {
   });
 });
 
-// 🚨 [수정] 강제 리셋 시 대기열까지 완전히 폭파하도록 보완
 app.post('/api/admin/robot/force-reset', (req, res) => {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
   }
   
-  // 대기열 비우기
   orderQueue = [];
   io.emit('queue_updated', orderQueue);
 
@@ -230,21 +249,17 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
 /* --- 웹소켓 파트 --- */
 
 io.on('connection', (socket) => {
-  // 처음 접속한 유저에게 현재 로봇 상태와 대기열 목록 전송
   socket.emit('robot_position', robotPosition);
   socket.emit('queue_updated', orderQueue);
 
-  // 🔄 [수정] 주문(호출) 발생 시 스마트하게 필터링
   socket.on('call_robot', (data) => {
     const { targetPos, productId } = data;
     const newOrder = { targetPos, productId };
 
-    // 로봇이 완전히 놀고 있거나(IDLE), 복귀 중(RETURNING)이면 즉시 호출 수락 및 이동
     if (robotPosition.status === 'IDLE' || robotPosition.status === 'RETURNING') {
       console.log("🛒 로봇이 즉시 주문을 처리하러 출발합니다.");
       driveRobotTo(targetPos, productId, false);
     } else {
-      // 로봇이 배달 중이거나(MOVING) 도착지에서 대기 중(ARRIVED)이면 대기열로 격리
       orderQueue.push(newOrder);
       io.emit('queue_updated', orderQueue);
       console.log(`📋 로봇이 바쁩니다. 주문을 대기열에 추가합니다. (총 대기: ${orderQueue.length}개)`);

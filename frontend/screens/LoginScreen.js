@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { StyleSheet, View, Text, SafeAreaView, Alert, TextInput, TouchableOpacity } from 'react-native';
 import styles from '../styles/LoginStyles';
 
-const SERVER_URL = 'http://192.168.0.10:4000';
+const SERVER_URL = 'http://192.168.0.49:4000';
 
 export default function LoginScreen({ setUser }) {
   const [isSignUpMode, setIsSignUpMode] = useState(false);

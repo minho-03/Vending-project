@@ -6,17 +6,23 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.10:4000';
+const SERVER_URL = 'http://192.168.0.49:4000';
 
 export default function MainScreen({ user, setUser }) {
   const [status, setStatus] = useState('IDLE');
   const [battery, setBattery] = useState(100);
-  const [qrValue, setQrValue] = useState(null);
   const [isModalVisible, setModalVisible] = useState(false);
 
   const [products, setProducts] = useState([]);
   const [isStockModalVisible, setStockModalVisible] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+
+  const [quantity, setQuantity] = useState(1);
+  const [qrList, setQrList] = useState([]); 
+  const [currentQrIndex, setCurrentQrIndex] = useState(0); 
+
+  const [coffeeSlot, setCoffeeSlot] = useState(1); 
+  const [colaSlot, setColaSlot] = useState(3);     
 
   const [robotData, setRobotData] = useState({ x: 50, y: 50, heading: 0, path: [], obstacles: [] });
   const [targetPos, setTargetPos] = useState({ x: 50, y: 50 });
@@ -24,7 +30,7 @@ export default function MainScreen({ user, setUser }) {
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
 
-  // --- 🌐 [수정] 밝은 톤(화이트 테마)에 맞춘 관제 맵 HTML/CSS 설정 ---
+  // --- 🌐 관제 맵 HTML/CSS 설정 ---
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -144,7 +150,6 @@ export default function MainScreen({ user, setUser }) {
           ctx.translate(camera.x, camera.y);
           ctx.scale(camera.scale, camera.scale);
 
-          // 🎨 [변경] 흰색 배경에 잘 보이는 연한 연갈색 격자선과 어두운 갈색 글씨로 매핑
           const gridSize = 50;
           ctx.strokeStyle = '#ede8e0'; ctx.lineWidth = 1 / camera.scale;
           ctx.fillStyle = '#9e8c7a'; ctx.font = \`\${10 / camera.scale}px sans-serif\`;
@@ -158,11 +163,9 @@ export default function MainScreen({ user, setUser }) {
             if (y % 100 === 0 && y !== 0) ctx.fillText(y, 2, y - 2); 
           }
 
-          // 📍 원점 십자 마커 (연한 감성 브라운)
           ctx.strokeStyle = '#c47d4a'; ctx.lineWidth = 2 / camera.scale;
           ctx.beginPath(); ctx.moveTo(-15, 0); ctx.lineTo(15, 0); ctx.moveTo(0, -15); ctx.lineTo(0, 15); ctx.stroke();
 
-          // 🛣️ 글로벌 경로선 (차분한 그린 라인)
           if (state.path && state.path.length > 0) {
             ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2.5 / camera.scale;
             ctx.setLineDash([3, 3]);
@@ -171,7 +174,6 @@ export default function MainScreen({ user, setUser }) {
             ctx.lineTo(state.targetX, state.targetY); ctx.stroke(); ctx.setLineDash([]);
           }
 
-          // ⚠️ 라이다 센서 장애물 포인트
           if (state.obstacles && state.obstacles.length > 0) {
             state.obstacles.forEach(obs => {
               ctx.fillStyle = '#ef4444'; ctx.shadowColor = 'rgba(239, 68, 68, 0.3)'; ctx.shadowBlur = 4;
@@ -180,13 +182,11 @@ export default function MainScreen({ user, setUser }) {
             ctx.shadowBlur = 0;
           }
 
-          // 🚩 목적지 핀 웨이포인트 (오렌지 마커)
           ctx.fillStyle = '#f97316'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 / camera.scale;
           ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           ctx.strokeStyle = 'rgba(249, 115, 22, 0.3)';
           ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 12, 0, Math.PI * 2); ctx.stroke();
 
-          // 🤖 [변경] 자율주행 AGV 로봇 에이전트를 앱 메인 컬러(브라운 테마 #c47d4a)로 통일!
           ctx.save();
           ctx.translate(currentRobot.x, currentRobot.y);
           ctx.rotate(currentRobot.heading);
@@ -194,11 +194,9 @@ export default function MainScreen({ user, setUser }) {
           ctx.fillStyle = '#c47d4a'; ctx.strokeStyle = '#3d2c1e'; ctx.lineWidth = 2 / camera.scale;
           ctx.beginPath(); ctx.arc(0, 0, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
-          // 로봇 방향 지시 노즈 (진한 갈색)
           ctx.fillStyle = '#3d2c1e';
           ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(3, -6); ctx.lineTo(3, 6); ctx.fill();
 
-          // 실시간 라이다 센서 반경 가이드라인
           ctx.strokeStyle = 'rgba(196, 125, 74, 0.15)'; ctx.lineWidth = 1 / camera.scale;
           ctx.beginPath(); ctx.arc(0, 0, 50, 0, Math.PI * 2); ctx.setLineDash([2, 4]); ctx.stroke();
 
@@ -249,27 +247,67 @@ export default function MainScreen({ user, setUser }) {
 
   const handleCallRobot = () => {
     if (!selectedProduct) { Alert.alert("알림", "🛒 [자판기 메뉴판]을 눌러 먼저 음료수를 골라주세요!"); return; }
-    if (!qrValue) { Alert.alert("알림", "💳 먼저 음료수 비용을 [결제 및 발급] 해주세요."); return; }
+    if (qrList.length === 0) { Alert.alert("알림", "💳 먼저 음료수 비용을 [결제 및 발급] 해주세요."); return; }
     if (socketRef.current) socketRef.current.emit('call_robot', { targetPos: targetPos, productId: selectedProduct.id });
   };
 
   const handleQRButtonPress = () => {
     if (!selectedProduct) { Alert.alert("알림", "구매할 음료를 먼저 선택해 주세요."); return; }
-    if (qrValue) { setModalVisible(true); } else {
-      Alert.alert("💳 결제 진행", `[${selectedProduct.name}]을(를) 결제하시겠습니까?`, [
+    if (qrList.length > 0) { 
+      setModalVisible(true); 
+    } else {
+      Alert.alert("💳 결제 진행", `[${selectedProduct.name}] ${quantity}개를 결제하시겠습니까?`, [
         { text: "취소", style: "cancel" },
-        { text: "결제하기", onPress: () => { setQrValue("PIMTO-" + Math.floor(Math.random() * 100000)); setModalVisible(true); } }
+        { 
+          text: "결제하기", 
+          onPress: () => { 
+            let generatedQrs = [];
+            let tempCoffee = coffeeSlot;
+            let tempCola = colaSlot;
+            const productName = selectedProduct.name;
+
+            for (let i = 0; i < quantity; i++) {
+              if (productName.includes("레쓰비") || productName.includes("커피")) {
+                generatedQrs.push(String(tempCoffee));
+                tempCoffee = tempCoffee === 1 ? 2 : 1;
+              } else if (productName.includes("콜라") || productName.includes("펩시")) {
+                generatedQrs.push(String(tempCola));
+                tempCola = tempCola === 3 ? 4 : 3;
+              } else {
+                generatedQrs.push("1");
+              }
+            }
+
+            setCoffeeSlot(tempCoffee);
+            setColaSlot(tempCola);
+            setQrList(generatedQrs); 
+            setCurrentQrIndex(0);    
+            setModalVisible(true); 
+          } 
+        }
       ]);
     }
   };
 
+  // 🛠️ [수정] 백엔드에 어떤 물품(productId)을 몇 개(quantity) 샀는지 함께 전송하도록 body 바디 추가
   const handleItemReceived = async () => {
     try {
-      const response = await fetch(`${SERVER_URL}/api/products/purchase-complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const response = await fetch(`${SERVER_URL}/api/products/purchase-complete`, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId: selectedProduct.id,
+          quantity: quantity // 선택한 수량(예: 2)을 그대로 넘겨줌
+        })
+      });
+      
       const data = await response.json();
       if (data.success) {
-        Alert.alert("수령 완료 🎉", "음료 배송이 완료되었습니다!");
-        setQrValue(null); setSelectedProduct(null); setModalVisible(false);
+        Alert.alert("수령 완료 🎉", "모든 음료 배송 및 수령이 완료되었습니다!");
+        setQrList([]); 
+        setSelectedProduct(null); 
+        setQuantity(1);
+        setModalVisible(false);
       }
     } catch (error) { Alert.alert("오류", "통신에 실패했습니다."); }
   };
@@ -295,10 +333,24 @@ export default function MainScreen({ user, setUser }) {
             <TouchableOpacity style={styles.logoutButton} onPress={() => setUser(null)}><Text style={styles.logoutButtonText}>로그아웃</Text></TouchableOpacity>
           </View>
           
-          <View style={{ marginTop: 8, padding: 8, backgroundColor: '#f5f6f8', borderRadius: 6 }}>
-            <Text style={{ color: '#4c4f69', fontWeight: 'bold', fontSize: 13 }}>
+          <View style={{ marginTop: 8, padding: 10, backgroundColor: '#f5f6f8', borderRadius: 6 }}>
+            <Text style={{ color: '#4c4f69', fontWeight: 'bold', fontSize: 13, marginBottom: selectedProduct ? 6 : 0 }}>
               🥤 투입된 음료 선택 상태: {selectedProduct ? `${selectedProduct.icon} ${selectedProduct.name} (선택됨)` : '❌ 상품을 선택해 주세요'}
             </Text>
+            {selectedProduct && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <Text style={{ fontSize: 12, color: '#666', fontWeight: '600' }}>주문 수량 조절:</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 4, borderWidth: 1, borderColor: '#e0e0e0' }}>
+                  <TouchableOpacity style={{ paddingHorizontal: 12, paddingVertical: 4 }} onPress={() => setQuantity(q => Math.max(1, q - 1))}>
+                    <Text style={{ fontWeight: 'bold', color: '#c47d4a' }}>-</Text>
+                  </TouchableOpacity>
+                  <Text style={{ paddingHorizontal: 10, fontWeight: 'bold', color: '#3d2c1e' }}>{quantity}</Text>
+                  <TouchableOpacity style={{ paddingHorizontal: 12, paddingVertical: 4 }} onPress={() => setQuantity(q => Math.min(selectedProduct.stock, q + 1))}>
+                    <Text style={{ fontWeight: 'bold', color: '#c47d4a' }}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
 
           <View style={{ flexDirection: 'row', marginTop: 10, gap: 8 }}>
@@ -310,7 +362,7 @@ export default function MainScreen({ user, setUser }) {
           </View>
         </View>
 
-        {/* 📡 1. [수정] 지도 하드코딩 스타일 제거 -> MainStyles.js의 하얀 배경과 완벽 동기화 */}
+        {/* 📡 1. 지도 영역 */}
         <Text style={styles.sectionTitle}>📡 ROS LiDAR 격자 맵</Text>
         <View style={styles.mapContainer}>
           <WebView
@@ -318,14 +370,14 @@ export default function MainScreen({ user, setUser }) {
             originWhitelist={['*']}
             source={{ html: mapHtml }}
             onMessage={handleWebViewMessage}
-            style={{ flex: 1, backgroundColor: 'transparent' }} // 배경 투명 처리로 컨테이너 테두리 보존
+            style={{ flex: 1, backgroundColor: 'transparent' }} 
             scrollEnabled={false}
             javaScriptEnabled={true}
           />
         </View>
         <Text style={styles.tipText}>💡 마우스 휠 또는 멀티터치로 줌인/아웃이 유연하게 연동됩니다.</Text>
 
-        {/* 🛠️ 2. [수정] 하단 제어부 파란색 하드코딩 제거 -> 베이지 테마로 일괄 자동 통일 */}
+        {/* 🛠️ 2. 하단 제어부 */}
         <View style={styles.controlPanel}>
           <View style={styles.coordInfoRow}>
             <Text style={styles.coordLabel}>하차 지정 좌표 (Target)</Text>
@@ -337,39 +389,63 @@ export default function MainScreen({ user, setUser }) {
           </TouchableOpacity>
           
           <View style={styles.subButtonRow}>
-            {/* ⭕ 파란색 오버라이드를 빼서 우측 QR 버튼과 완벽하게 똑같은 베이지색 톤으로 통일 완료! */}
             <TouchableOpacity style={styles.subButton} onPress={fetchProducts}>
               <Text style={styles.subButtonText}>🛒 자판기 메뉴판</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={[styles.subButton, qrValue ? styles.qrActiveButton : null]} onPress={handleQRButtonPress}>
-              <Text style={[styles.subButtonText, qrValue ? styles.qrActiveText : null]}>
-                {qrValue ? "📱 인증용 QR 보기" : "💳 결제 및 발급"}
+            <TouchableOpacity style={[styles.subButton, qrList.length > 0 ? styles.qrActiveButton : null]} onPress={handleQRButtonPress}>
+              <Text style={[styles.subButtonText, qrList.length > 0 ? styles.qrActiveText : null]}>
+                {qrList.length > 0 ? "📱 인증용 QR 보기" : "💳 결제 및 발급"}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* 모달 창 구성품들 */}
+        {/* 다중 인증 QR 코드 팝업 모달 */}
         <Modal visible={isModalVisible} transparent={true} animationType="fade">
           <View style={styles.modalBackground}>
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>✅ 자판기 결제 승인 완료!</Text>
-              <Text style={{ marginBottom: 15, color: '#666', textAlign: 'center' }}>로봇이 도착하면 아래 QR을 카메라에 인식시켜 음료를 수령하세요.</Text>
-              <View style={styles.qrWrapper}>{qrValue && <QRCode value={qrValue} size={180} />}</View>
-              <TouchableOpacity style={styles.closeButton} onPress={() => setModalVisible(false)}><Text style={styles.closeButtonText}>로봇 호출하기</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.finishButton} onPress={handleItemReceived}><Text style={styles.finishButtonText}>🎁 수령 완료 후 QR 폐기</Text></TouchableOpacity>
+              <Text style={{ marginBottom: 15, color: '#666', textAlign: 'center' }}>
+                로봇이 도착하면 아래 QR을 순서대로 카메라에 인식시키세요.
+              </Text>
+              
+              <View style={styles.qrWrapper}>
+                {qrList.length > 0 && <QRCode value={qrList[currentQrIndex]} size={180} />}
+              </View>
+              
+              <Text style={{ marginVertical: 12, fontWeight: 'bold', color: '#c47d4a', fontSize: 15, textAlign: 'center' }}>
+                🥤 총 {qrList.length}개 중 [{currentQrIndex + 1}번째] 음료 수령 중
+              </Text>
+
+              {currentQrIndex < qrList.length - 1 ? (
+                <TouchableOpacity 
+                  style={[styles.finishButton, { backgroundColor: '#c47d4a', marginBottom: 6 }]} 
+                  onPress={() => setCurrentQrIndex(currentQrIndex + 1)}
+                >
+                  <Text style={styles.finishButtonText}>➡️ 다음 음료 QR 띄우기</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.finishButton} onPress={handleItemReceived}>
+                  <Text style={styles.finishButtonText}>🎁 모든 음료 수령 완료 및 QR 폐기</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity style={styles.closeButton} onPress={() => setModalVisible(false)}>
+                <Text style={styles.closeButtonText}>창 닫기</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
 
+        {/* 메뉴 선택 모달 창 */}
         <Modal visible={isStockModalVisible} transparent={true} animationType="slide">
           <View style={styles.modalBackground}>
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>🥤 자판기 메뉴판</Text>
               <ScrollView style={{ width: '100%', maxHeight: 300, marginBottom: 20 }}>
                 {products.map((item) => (
-                  <TouchableOpacity key={item.id} style={[styles.productItem, selectedProduct?.id === item.id ? { borderColor: '#7aa2f7', borderWidth: 2 } : null]} onPress={() => { setSelectedProduct(item); setStockModalVisible(false); }}>
+                  <TouchableOpacity key={item.id} style={[styles.productItem, selectedProduct?.id === item.id ? { borderColor: '#7aa2f7', borderWidth: 2 } : null]} onPress={() => { setSelectedProduct(item); setQuantity(1); setStockModalVisible(false); }}>
                     <Text style={styles.productIcon}>{item.icon}</Text>
                     <View style={styles.productInfo}>
                       <Text style={styles.productName}>{item.name}</Text>
