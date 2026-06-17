@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const mysql = require('mysql2');
+const WebSocket = require('ws'); // 📡 ROSbridge 다이렉트 통신용 순수 웹소켓
 
 const app = express();
 app.use(cors());
@@ -21,7 +22,7 @@ db.connect((err) => {
   console.log('🟩 MariaDB 데이터베이스 연결 성공!');
 });
 
-// 🔋 로봇 상태 객체
+// 🔋 로봇 상태 객체 (앱과 실시간 공유될 관제 데이터의 단일 진실 공급원)
 let robotPosition = { 
   x: 0, y: 0, 
   heading: 0,
@@ -40,7 +41,7 @@ const MOCK_MAP_OBSTACLES = [
   { x: 200, y: 250 }, { x: 205, y: 255 }, { x: 210, y: 260 }
 ];
 
-// 🚙 로봇 주행 핵심 함수 (배달 및 복귀 공용 사용)
+// 🚙 가상 주행 핵심 함수 (실제 로봇 구동 명령 연동 전 시뮬레이션 및 데이터 브로드캐스팅용)
 function driveRobotTo(targetPos, productId, isReturn = false) {
   if (intervalId) {
     clearInterval(intervalId);
@@ -116,6 +117,58 @@ function checkAndProcessQueue() {
     driveRobotTo(nextOrder.targetPos, nextOrder.productId, false);
   }
 }
+/* 📡 --- ROSbridge 웹소켓 수동 다이렉트 연동부 --- */
+
+const rosWs = new WebSocket('ws://192.168.0.51:9090');
+
+rosWs.on('open', () => {
+  console.log('🟩 [ROSbridge] 로봇 라즈베리파이와 백엔드 서버가 다이렉트로 연결되었습니다!');
+  
+  const subscribeMessage = {
+    op: 'subscribe',
+    topic: '/odom', // 현재 텔레옵 주행 중인 오돔 토픽
+    type: 'nav_msgs/Odometry'
+  };
+  rosWs.send(JSON.stringify(subscribeMessage));
+});
+
+rosWs.on('message', (data) => {
+  try {
+    const rawData = JSON.parse(data);
+    
+    if (rawData.op === 'publish' && rawData.topic === '/odom') {
+      const msg = rawData.msg;
+      
+      // 1. ROS 실제 지도 평면 좌표 (미터 단위)
+      const rosX = msg.pose.pose.position.x;
+      const rosY = msg.pose.pose.position.y;
+      
+      // 2. 쿼터니언 회전 구조값을 라디안(Heading 각도)으로 계산
+      const q = msg.pose.pose.orientation;
+      const heading = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+      
+      // 3. 🗺️ [초정밀] YAML 기반 매핑 비례식 적용
+      const RESOLUTION = 0.05;
+      const ORIGIN_X = -10.0;
+      const ORIGIN_Y = -10.0;
+      const MAP_HEIGHT_PIXELS = 500; // 💡 기존 앱의 지도 이미지 픽셀 높이에 맞게 수정해 줘!
+      
+      // 공식 대입: 미터 좌표를 정확한 픽셀 좌표로 환산
+      robotPosition.x = (rosX - ORIGIN_X) / RESOLUTION;
+      robotPosition.y = MAP_HEIGHT_PIXELS - ((rosY - ORIGIN_Y) / RESOLUTION); // Y축 반전 보정
+      robotPosition.heading = heading;
+      
+      // 디버깅용 실시간 로그 출력
+      console.log(`📍 실시간 매핑 좌표 -> 앱 화면 X: ${robotPosition.x.toFixed(1)}px, Y: ${robotPosition.y.toFixed(1)}px`);
+      
+      // 4. 기존 디자인을 유지 중인 리액트 네이티브 앱으로 실시간 전송
+      io.emit('robot_position', robotPosition);
+    }
+  } catch (err) {
+    console.error("⚠️ [ROS 데이터 파싱 오류]:", err);
+  }
+});
+
 
 /* --- API 라우터 파트 --- */
 
@@ -153,34 +206,27 @@ app.post('/api/products/delete', (req, res) => {
   db.query('DELETE FROM products WHERE id = ?', [productId], () => res.json({ success: true }));
 });
 
-// 🔄 [완전 수정] 음료 수령 완료 API -> 다중 선택 수량(quantity) 완벽 반영 및 일괄 인서트 처리
+// 🔄 음료 수령 완료 API -> 다중 선택 수량(quantity) 완벽 반영 및 일괄 인서트 처리
 app.post('/api/products/purchase-complete', (req, res) => {
-  // 프론트엔드가 body로 쏴준 내역을 명확하게 구조분해 할당으로 추출
   const { productId, quantity } = req.body;
   
   const targetProductId = productId || robotPosition.currentProductId;
-  const targetQuantity = parseInt(quantity, 10) || 1; // 안전을 위해 정수 변환 및 기본값 방어
+  const targetQuantity = parseInt(quantity, 10) || 1;
 
   if (!targetProductId) return res.status(400).json({ success: false, message: "상품 정보가 유실되었습니다." });
   
-  // 1️⃣ 하드코딩된 'stock - 1' 대신 'stock - ?' 로 변경하고 보유 재고가 살 수량 이상인지 체크
   db.query('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', [targetQuantity, targetProductId, targetQuantity], (err, results) => {
     if (err || results.affectedRows === 0) return res.status(400).json({ success: false, message: "재고가 부족하여 처리가 불가능합니다." });
     
-    // 2️⃣ orders 통계 테이블에 산 개수만큼 이력을 남기기 위해 단가(price)를 가져옴
     db.query('SELECT price FROM products WHERE id = ?', [targetProductId], (priceErr, priceResults) => {
       if (priceErr || priceResults.length === 0) return res.status(500).json({ success: false });
       
       const productPrice = priceResults[0].price;
-      
-      // 3️⃣ 구매 개수(targetQuantity)만큼 대량 인서트(Bulk Insert)를 위한 2차원 배열 데이터 가공
-      // 예시 구조: [ [productId, price], [productId, price] ]
       const bulkOrderData = [];
       for (let i = 0; i < targetQuantity; i++) {
         bulkOrderData.push([targetProductId, productPrice]);
       }
 
-      // mysql2의 대량 인서트 전용 문법 (VALUES ?) 연동
       db.query('INSERT INTO orders (product_id, price) VALUES ?', [bulkOrderData], (orderErr) => {
         if (orderErr) {
           console.error("❌ 주문 내역 인서트 중 오류 발생:", orderErr);
@@ -189,7 +235,6 @@ app.post('/api/products/purchase-complete', (req, res) => {
 
         robotPosition.currentProductId = null;
         
-        // 💡 배송 프로세스 종료 후 대기열 파이프라인 트리거
         if (orderQueue.length > 0) {
           checkAndProcessQueue();
         } else {
@@ -246,7 +291,7 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
   return res.json({ success: true });
 });
 
-/* --- 웹소켓 파트 --- */
+/* --- 웹소켓(Socket.io) 파트 --- */
 
 io.on('connection', (socket) => {
   socket.emit('robot_position', robotPosition);
@@ -267,4 +312,4 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(4000, () => console.log('🚀 대기열 인텔리전트 서버 가동 중 (포트 4000)'));
+server.listen(4000, () => console.log('🚀 풀스택 대기열 & ROS 하이브리드 서버 가동 중 (포트 4000)'));

@@ -24,13 +24,19 @@ export default function MainScreen({ user, setUser }) {
   const [coffeeSlot, setCoffeeSlot] = useState(1); 
   const [colaSlot, setColaSlot] = useState(3);     
 
-  const [robotData, setRobotData] = useState({ x: 50, y: 50, heading: 0, path: [], obstacles: [] });
-  const [targetPos, setTargetPos] = useState({ x: 50, y: 50 });
+  const [robotData, setRobotData] = useState({ x: 250, y: 250, heading: 0, path: [], obstacles: [] });
+  const [targetPos, setTargetPos] = useState({ x: 250, y: 250 });
 
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
+  
+  // 💡 targetPos의 실시간 추적을 위한 Ref 선언 (소켓 재연결 방지)
+  const targetPosRef = useRef(targetPos);
+  useEffect(() => {
+    targetPosRef.current = targetPos;
+  }, [targetPos]);
 
-  // --- 🌐 관제 맵 HTML/CSS 설정 ---
+  // --- 🌐 관제 맵 HTML/CSS 설정 (백엔드 매핑 픽셀 최적화 버전) ---
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -48,11 +54,13 @@ export default function MainScreen({ user, setUser }) {
         const canvas = document.getElementById('mapCanvas');
         const ctx = canvas.getContext('2d');
 
-        let currentRobot = { x: 50, y: 50, heading: 0 };
-        let targetRobot = { x: 50, y: 50, heading: 0 };
-        let state = { targetX: 50, targetY: 50, path: [], obstacles: [] };
+        // 💡 백엔드에서 제공하는 초정밀 픽셀 기준 초기화
+        let currentRobot = { x: 250, y: 250, heading: 0 };
+        let targetRobot = { x: 250, y: 250, heading: 0 };
+        let state = { targetX: 250, targetY: 250, path: [], obstacles: [] };
         
-        let camera = { x: 30, y: 50, scale: 1.2 };
+        // 카메라 줌인/아웃 중심 조정
+        let camera = { x: 0, y: 0, scale: 1.0 };
         let isDragging = false;
         let dragStart = { x: 0, y: 0 };
         let touchStartX = 0; let touchStartY = 0; let isMoved = false;
@@ -152,7 +160,7 @@ export default function MainScreen({ user, setUser }) {
 
           const gridSize = 50;
           ctx.strokeStyle = '#ede8e0'; ctx.lineWidth = 1 / camera.scale;
-          ctx.fillStyle = '#9e8c7a'; ctx.font = \`\${10 / camera.scale}px sans-serif\`;
+          ctx.fillStyle = '#9e8c7a'; ctx.font = (10 / camera.scale) + 'px sans-serif';
 
           for (let x = -1000; x < 2000; x += gridSize) {
             ctx.beginPath(); ctx.moveTo(x, -1000); ctx.lineTo(x, 2000); ctx.stroke();
@@ -212,8 +220,10 @@ export default function MainScreen({ user, setUser }) {
     </html>
   `;
 
+  // 💡 [수정] 의존성 배열을 빈 배열([])로 만들어 최초 한 번만 소켓 연결을 수립
   useEffect(() => {
     socketRef.current = io(SERVER_URL);
+
     socketRef.current.on('robot_position', (data) => {
       setRobotData(data);
       if (data.battery !== undefined) setBattery(data.battery);
@@ -221,7 +231,7 @@ export default function MainScreen({ user, setUser }) {
       if (webViewRef.current) {
         webViewRef.current.postMessage(JSON.stringify({
           x: data.x, y: data.y, heading: data.heading, 
-          targetX: targetPos.x, targetY: targetPos.y,
+          targetX: targetPosRef.current.x, targetY: targetPosRef.current.y, // Ref로 안전하게 접근
           path: data.path, obstacles: data.obstacles
         }));
       }
@@ -236,7 +246,7 @@ export default function MainScreen({ user, setUser }) {
     });
 
     return () => { if (socketRef.current) socketRef.current.disconnect(); };
-  }, [targetPos]);
+  }, []); // 소켓 커넥션 단일화 보장
 
   const handleWebViewMessage = (event) => {
     const data = JSON.parse(event.nativeEvent.data);
@@ -289,7 +299,6 @@ export default function MainScreen({ user, setUser }) {
     }
   };
 
-  // 🛠️ [수정] 백엔드에 어떤 물품(productId)을 몇 개(quantity) 샀는지 함께 전송하도록 body 바디 추가
   const handleItemReceived = async () => {
     try {
       const response = await fetch(`${SERVER_URL}/api/products/purchase-complete`, { 
@@ -297,7 +306,7 @@ export default function MainScreen({ user, setUser }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           productId: selectedProduct.id,
-          quantity: quantity // 선택한 수량(예: 2)을 그대로 넘겨줌
+          quantity: quantity 
         })
       });
       
@@ -323,7 +332,6 @@ export default function MainScreen({ user, setUser }) {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        {/* 상단 관제 대시보드 상태창 */}
         <View style={styles.headerCard}>
           <View style={styles.headerRow}>
             <View>
@@ -362,7 +370,6 @@ export default function MainScreen({ user, setUser }) {
           </View>
         </View>
 
-        {/* 📡 1. 지도 영역 */}
         <Text style={styles.sectionTitle}>📡 ROS LiDAR 격자 맵</Text>
         <View style={styles.mapContainer}>
           <WebView
@@ -377,7 +384,6 @@ export default function MainScreen({ user, setUser }) {
         </View>
         <Text style={styles.tipText}>💡 마우스 휠 또는 멀티터치로 줌인/아웃이 유연하게 연동됩니다.</Text>
 
-        {/* 🛠️ 2. 하단 제어부 */}
         <View style={styles.controlPanel}>
           <View style={styles.coordInfoRow}>
             <Text style={styles.coordLabel}>하차 지정 좌표 (Target)</Text>
@@ -401,7 +407,6 @@ export default function MainScreen({ user, setUser }) {
           </View>
         </View>
 
-        {/* 다중 인증 QR 코드 팝업 모달 */}
         <Modal visible={isModalVisible} transparent={true} animationType="fade">
           <View style={styles.modalBackground}>
             <View style={styles.modalContent}>
@@ -438,7 +443,6 @@ export default function MainScreen({ user, setUser }) {
           </View>
         </Modal>
 
-        {/* 메뉴 선택 모달 창 */}
         <Modal visible={isStockModalVisible} transparent={true} animationType="slide">
           <View style={styles.modalBackground}>
             <View style={styles.modalContent}>
