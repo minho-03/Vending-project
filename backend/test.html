@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<script src="https://cdn.jsdelivr.net/npm/easeljs@1.0.2/lib/easeljs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/eventemitter2@6.4.9/lib/eventemitter2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/roslib@1.3.0/build/roslib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ros2d@0.10.0/build/ros2d.min.js"></script>
+<style>
+  canvas {
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-crisp-edges;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+</style>
+<script>
+function init() {
+  var ros = new ROSLIB.Ros({ url: 'ws://192.168.0.51:9090' });
+
+  var viewer = new ROS2D.Viewer({ divID: 'map', width: 700, height: 700 });
+  var stage = viewer.scene;
+
+  var userScale = 40.0;
+  var userX = 700 / 2;
+  var userY = 700 / 2;
+  var viewRotation = 0; // 화면 표시용 회전 각도 (0, 90, 180, 270)
+
+  var gridClient = new ROS2D.OccupancyGridClient({
+    ros: ros,
+    rootObject: stage,
+    continuous: true
+  });
+
+  // 회전/반전 없는 순수 버전: 맵을 받은 그대로 표시
+  // 화면 표시 회전만 적용 (ROS 좌표 변환에는 영향 없음)
+  function applyStageTransform() {
+    stage.scaleX = userScale;
+    stage.scaleY = userScale;
+    stage.x = userX;
+    stage.y = userY;
+    stage.rotation = viewRotation;
+    stage.update();
+  }
+
+  gridClient.on('change', function() {
+    if (gridClient.currentGrid && gridClient.currentGrid.width > 0) {
+      viewer.scaleToDimensions(gridClient.currentGrid.width, gridClient.currentGrid.height);
+      viewer.shift(gridClient.currentGrid.pose.position.x, gridClient.currentGrid.pose.position.y);
+      applyStageTransform();
+    }
+  });
+
+  // 로봇 마커 (빨간 원) - rosToEaselJS 표준 변환만 사용
+  var robotMarker = new createjs.Shape();
+  robotMarker.graphics.beginFill('#dc3545').drawCircle(0, 0, 0.15);
+  robotMarker.visible = false;
+  stage.addChild(robotMarker);
+
+  var tfClient = new ROSLIB.TFClient({
+    ros: ros, fixedFrame: 'map', angularThres: 0.01, transThres: 0.01, rate: 10.0
+  });
+
+  tfClient.subscribe('base_link', function(tf) {
+    // ros2d 표준 변환: y만 반전 (ROS는 y-up, screen은 y-down)
+    robotMarker.x = tf.translation.x;
+    robotMarker.y = -tf.translation.y;
+    robotMarker.visible = true;
+    stage.update();
+
+    console.log(`[TF] base_link ROS(x=${tf.translation.x.toFixed(3)}, y=${tf.translation.y.toFixed(3)}) -> Screen(x=${robotMarker.x.toFixed(3)}, y=${robotMarker.y.toFixed(3)})`);
+  });
+
+  var initialPoseTopic = new ROSLIB.Topic({
+    ros: ros,
+    name: '/initialpose',
+    messageType: 'geometry_msgs/PoseWithCovarianceStamped'
+  });
+
+  function sendInitialPose(rosX, rosY, yaw) {
+    var qz = Math.sin(yaw / 2);
+    var qw = Math.cos(yaw / 2);
+
+    var poseMsg = new ROSLIB.Message({
+      header: {
+        frame_id: 'map',
+        stamp: { secs: Math.floor(Date.now()/1000), nsecs: 0 }
+      },
+      pose: {
+        pose: {
+          position: { x: parseFloat(rosX), y: parseFloat(rosY), z: 0.0 },
+          orientation: { x: 0.0, y: 0.0, z: qz, w: qw }
+        },
+        covariance: [0.01,0,0,0,0,0, 0,0.01,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0.01]
+      }
+    });
+    initialPoseTopic.publish(poseMsg);
+    console.log(`[SEND] /initialpose ROS X=${rosX.toFixed(3)}, Y=${rosY.toFixed(3)}, Yaw=${(yaw*180/Math.PI).toFixed(1)}°`);
+  }
+
+  setTimeout(function() {
+    var canvas = document.getElementById('map').getElementsByTagName('canvas')[0];
+    if (!canvas) {
+      console.error('canvas not found');
+      return;
+    }
+    if (stage.enableMouseOver) stage.enableMouseOver(0);
+
+    // 휠 줌
+    canvas.addEventListener('wheel', function(e) {
+      e.preventDefault();
+      var factor = e.deltaY < 0 ? 1.1 : 0.9;
+      var newScale = userScale * factor;
+      if (newScale < 5 || newScale > 500) return;
+
+      var rect = canvas.getBoundingClientRect();
+      var mouseX = e.clientX - rect.left;
+      var mouseY = e.clientY - rect.top;
+
+      userX = mouseX - (mouseX - userX) * (newScale / userScale);
+      userY = mouseY - (mouseY - userY) * (newScale / userScale);
+      userScale = newScale;
+
+      applyStageTransform();
+    }, { passive: false, capture: true });
+
+    var rosTargetX = 0.0;
+    var rosTargetY = 0.0;
+    var poseStartMouse = null;
+    var dragStart = null;
+
+    // 가이드 점 (주황)
+    var guideArrow = new createjs.Shape();
+    guideArrow.graphics.beginFill('rgba(255, 127, 0, 0.6)').drawCircle(0, 0, 0.2);
+    guideArrow.visible = false;
+    stage.addChild(guideArrow);
+
+    canvas.addEventListener('mousedown', function(e) {
+      var rect = canvas.getBoundingClientRect();
+      var mouseX = e.clientX - rect.left;
+      var mouseY = e.clientY - rect.top;
+
+      if (e.button === 0) {
+        try {
+          // globalToRos: ros2d 표준 변환 함수. 추가 반전 없이 그대로 사용
+          var rosPoint = stage.globalToRos(mouseX, mouseY);
+          rosTargetX = rosPoint.x;
+          rosTargetY = rosPoint.y;
+
+          var localPoint = stage.globalToLocal(mouseX, mouseY);
+          guideArrow.x = localPoint.x;
+          guideArrow.y = localPoint.y;
+          guideArrow.visible = true;
+
+          poseStartMouse = { x: mouseX, y: mouseY };
+          stage.update();
+
+          console.log(`[CLICK] Screen(${mouseX.toFixed(0)}, ${mouseY.toFixed(0)}) -> ROS(x=${rosTargetX.toFixed(3)}, y=${rosTargetY.toFixed(3)})`);
+        } catch (err) {
+          console.error('좌표 변환 실패:', err);
+        }
+      } else if (e.button === 2) {
+        dragStart = { x: e.clientX - userX, y: e.clientY - userY };
+        e.preventDefault();
+      }
+    }, true);
+
+    window.addEventListener('mousemove', function(e) {
+      if (dragStart && e.buttons === 2) {
+        userX = e.clientX - dragStart.x;
+        userY = e.clientY - dragStart.y;
+        applyStageTransform();
+      }
+    });
+
+    window.addEventListener('mouseup', function(e) {
+      if (e.button === 0 && poseStartMouse) {
+        var rect = canvas.getBoundingClientRect();
+        var mouseX = e.clientX - rect.left;
+        var mouseY = e.clientY - rect.top;
+
+        var deltaX = mouseX - poseStartMouse.x;
+        var deltaY = mouseY - poseStartMouse.y;
+
+        // 표준 atan2: 화면 y축은 아래로 증가하므로 -deltaY로 ROS 방향(y 위로 증가)과 맞춤
+        var finalYaw = 0.0;
+        if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+          finalYaw = Math.atan2(-deltaY, deltaX);
+        }
+
+        sendInitialPose(rosTargetX, rosTargetY, finalYaw);
+
+        guideArrow.visible = false;
+        poseStartMouse = null;
+        stage.update();
+      }
+      if (e.button === 2) dragStart = null;
+    });
+
+    canvas.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+    });
+
+    // 90도 회전 버튼
+    document.getElementById('rotateBtn').addEventListener('click', function() {
+      viewRotation = (viewRotation + 90) % 360;
+      applyStageTransform();
+    });
+
+  }, 500);
+}
+</script>
+</head>
+<body onload="init()">
+  <h1>PIMTO 로봇 통합 관제 웹 레이아웃 (디버그 버전 - 반전 보정 없음)</h1>
+  <p><b>마우스 왼쪽 클릭 및 드래그</b>: 로봇 위치 지정 후 원하는 주행 방향으로 밀고 마우스 떼기</p>
+  <p><b>마우스 휠</b>: 확대/축소 | <b>마우스 오른쪽 드래그</b>: 지도 화면 시점 이동</p>
+  <p style="color:#888">F12 콘솔에서 [CLICK]과 [TF] 로그를 확인해 실제 좌표 방향을 진단하세요.</p>
+  <button id="rotateBtn" style="margin-bottom:8px; padding:6px 14px; cursor:pointer;">지도 90° 회전</button>
+  <div id="map" style="border: 1px solid #ccc; width:700px; height:700px; overflow:hidden; background:#555555;"></div>
+</body>
+</html>
