@@ -1,6 +1,7 @@
 // server.js
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const mysql = require('mysql2');
@@ -9,6 +10,7 @@ const WebSocket = require('ws'); // 📡 ROSbridge 다이렉트 통신용 순수
 const app = express();
 app.use(cors());
 app.use(express.json()); 
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
@@ -24,8 +26,8 @@ db.connect((err) => {
 
 // 🔋 로봇 상태 객체 (앱과 실시간 공유될 관제 데이터의 단일 진실 공급원)
 let robotPosition = { 
-  x: 0, y: 0, 
-  heading: 0,
+  x: 310, y: 350, 
+  heading: -Math.PI / 2,
   status: 'IDLE', // IDLE, MOVING, ARRIVED, RETURNING
   battery: 100, 
   currentProductId: null,

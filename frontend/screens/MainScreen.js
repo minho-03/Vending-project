@@ -24,8 +24,8 @@ export default function MainScreen({ user, setUser }) {
   const [coffeeSlot, setCoffeeSlot] = useState(1); 
   const [colaSlot, setColaSlot] = useState(3);     
 
-  const [robotData, setRobotData] = useState({ x: 250, y: 250, heading: 0, path: [], obstacles: [] });
-  const [targetPos, setTargetPos] = useState({ x: 250, y: 250 });
+  const [robotData, setRobotData] = useState({ x: 310, y: 350, heading: 0, path: [], obstacles: [] });
+  const [targetPos, setTargetPos] = useState({ x: 310, y: 350 });
 
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
@@ -54,17 +54,24 @@ export default function MainScreen({ user, setUser }) {
         const canvas = document.getElementById('mapCanvas');
         const ctx = canvas.getContext('2d');
 
+        const mapImg = new Image();
+        mapImg.crossOrigin = "Anonymous";
+        mapImg.src = 'http://192.168.0.49:4000/assets/test_map.png';
+
         // 💡 백엔드에서 제공하는 초정밀 픽셀 기준 초기화
-        let currentRobot = { x: 250, y: 250, heading: 0 };
-        let targetRobot = { x: 250, y: 250, heading: 0 };
-        let state = { targetX: 250, targetY: 250, path: [], obstacles: [] };
+        let currentRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
+        let targetRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
+        let state = { targetX: 310, targetY: 350, path: [], obstacles: [] };
         
-        // 카메라 줌인/아웃 중심 조정
-        let camera = { x: 0, y: 0, scale: 1.0 };
+        // 💡 카메라 상태에 rotation(회전) 속성 추가
+        let camera = { x: 0, y: 0, scale: 1.0, rotation: 0 };
         let isDragging = false;
         let dragStart = { x: 0, y: 0 };
         let touchStartX = 0; let touchStartY = 0; let isMoved = false;
+        
+        // 💡 회전을 위한 초기 변수 추가
         let initialPinchDistance = null; let initialScale = 1;
+        let initialPinchAngle = null; let initialRotation = 0;
 
         function resize() {
           canvas.width = window.innerWidth || 300;
@@ -106,10 +113,15 @@ export default function MainScreen({ user, setUser }) {
           if (!isMoved) handleMapClick(e.clientX, e.clientY);
         });
 
+        // 💡 휠 이벤트: Shift키를 누른 상태로 휠을 돌리면 회전, 아니면 줌인/아웃
         canvas.addEventListener('wheel', (e) => {
           e.preventDefault();
-          const zoomAmount = 1 - (e.deltaY * 0.0015);
-          camera.scale = Math.min(Math.max(camera.scale * zoomAmount, 0.4), 4);
+          if (e.shiftKey) {
+            camera.rotation += (e.deltaY * 0.005);
+          } else {
+            const zoomAmount = 1 - (e.deltaY * 0.0015);
+            camera.scale = Math.min(Math.max(camera.scale * zoomAmount, 0.4), 4);
+          }
         }, { passive: false });
 
         canvas.addEventListener('touchstart', (e) => {
@@ -119,27 +131,49 @@ export default function MainScreen({ user, setUser }) {
             dragStart.x = touchStartX - camera.x; dragStart.y = touchStartY - camera.y;
           } else if (e.touches.length === 2) {
             isMoved = true;
-            initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            
+            // 💡 두 손가락 거리 및 각도 저장
+            initialPinchDistance = Math.hypot(dx, dy);
+            initialPinchAngle = Math.atan2(dy, dx);
             initialScale = camera.scale;
+            initialRotation = camera.rotation;
           }
         });
+        
         canvas.addEventListener('touchmove', (e) => {
           e.preventDefault();
           if (e.touches.length === 1) {
             if (Math.hypot(e.touches[0].clientX - touchStartX, e.touches[0].clientY - touchStartY) > 5) isMoved = true;
             if (isMoved) { camera.x = e.touches[0].clientX - dragStart.x; camera.y = e.touches[0].clientY - dragStart.y; }
           } else if (e.touches.length === 2) {
-            const currentDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            
+            // 💡 거리로 줌인/아웃, 각도로 회전 계산
+            const currentDist = Math.hypot(dx, dy);
+            const currentAngle = Math.atan2(dy, dx);
+            
             camera.scale = Math.min(Math.max(initialScale * (currentDist / initialPinchDistance), 0.4), 4);
+            camera.rotation = initialRotation + (currentAngle - initialPinchAngle);
           }
         }, { passive: false });
+        
         canvas.addEventListener('touchend', (e) => {
           if (!isMoved && e.changedTouches.length === 1) handleMapClick(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
         });
 
+        // 💡 회전각을 반영한 좌표 클릭 변환 공식
         function handleMapClick(screenX, screenY) {
-          const worldX = (screenX - camera.x) / camera.scale;
-          const worldY = (screenY - camera.y) / camera.scale;
+          // 1. 카메라 이동량 및 스케일 제거
+          const dx = (screenX - camera.x) / camera.scale;
+          const dy = (screenY - camera.y) / camera.scale;
+          
+          // 2. 화면이 돌아간 만큼 마우스 좌표를 역회전하여 실제 월드 좌표 도출
+          const worldX = dx * Math.cos(-camera.rotation) - dy * Math.sin(-camera.rotation);
+          const worldY = dx * Math.sin(-camera.rotation) + dy * Math.cos(-camera.rotation);
+          
           state.targetX = worldX; state.targetY = worldY;
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_CLICK', x: worldX, y: worldY }));
         }
@@ -155,9 +189,19 @@ export default function MainScreen({ user, setUser }) {
 
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.save();
+          
+          // 💡 카메라 상태 캔버스에 적용 (이동 -> 스케일 -> 회전 순서)
           ctx.translate(camera.x, camera.y);
           ctx.scale(camera.scale, camera.scale);
+          ctx.rotate(camera.rotation);
 
+          if (mapImg.complete) {
+            ctx.globalAlpha = 0.8; // 지도를 80% 불투명도
+            ctx.drawImage(mapImg, 0, 0, 600, 600); 
+            ctx.globalAlpha = 1.0; // 투명도 원상복구
+          }
+
+          // 이하 기존 그리기 로직 (격자, 경로, 로봇 등)
           const gridSize = 50;
           ctx.strokeStyle = '#ede8e0'; ctx.lineWidth = 1 / camera.scale;
           ctx.fillStyle = '#9e8c7a'; ctx.font = (10 / camera.scale) + 'px sans-serif';
@@ -218,7 +262,7 @@ export default function MainScreen({ user, setUser }) {
       </script>
     </body>
     </html>
-  `;
+`;
 
   // 💡 [수정] 의존성 배열을 빈 배열([])로 만들어 최초 한 번만 소켓 연결을 수립
   useEffect(() => {
@@ -380,6 +424,7 @@ export default function MainScreen({ user, setUser }) {
             style={{ flex: 1, backgroundColor: 'transparent' }} 
             scrollEnabled={false}
             javaScriptEnabled={true}
+            mixedContentMode='always'
           />
         </View>
         <Text style={styles.tipText}>💡 마우스 휠 또는 멀티터치로 줌인/아웃이 유연하게 연동됩니다.</Text>
