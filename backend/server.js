@@ -5,7 +5,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const mysql = require('mysql2');
-const WebSocket = require('ws'); // 📡 ROSbridge 다이렉트 통신용 순수 웹소켓
+const WebSocket = require('ws');
 
 const app = express();
 app.use(cors());
@@ -24,26 +24,42 @@ db.connect((err) => {
   console.log('🟩 MariaDB 데이터베이스 연결 성공!');
 });
 
-// 🔋 로봇 상태 객체 (앱과 실시간 공유될 관제 데이터의 단일 진실 공급원)
+// 🔋 로봇 상태 객체
 let robotPosition = { 
   x: 310, y: 350, 
   heading: -Math.PI / 2,
-  status: 'IDLE', // IDLE, MOVING, ARRIVED, RETURNING
+  status: 'IDLE',
   battery: 100, 
   currentProductId: null,
   path: [], obstacles: []
 };
 let intervalId = null;
 
-// 📋 주문 대기열 시스템을 위한 배열 선언
+// 📋 주문 대기열
 let orderQueue = [];
 
-const MOCK_MAP_OBSTACLES = [
-  { x: 120, y: 140 }, { x: 125, y: 140 }, { x: 130, y: 140 },
-  { x: 200, y: 250 }, { x: 205, y: 255 }, { x: 210, y: 260 }
-];
+// 🗺️ 좌표 변환 상수
+const RESOLUTION = 0.05;
+const ORIGIN_X = -10.0;
+const ORIGIN_Y = -10.0;
+const MAP_HEIGHT_PIXELS = 384;
+const OFFSET_X = 190;
+const OFFSET_Y = 127;
 
-// 🚙 가상 주행 핵심 함수 (실제 로봇 구동 명령 연동 전 시뮬레이션 및 데이터 브로드캐스팅용)
+// 🏠 홈 기지 픽셀 좌표 (ROS 원점 기준 역산)
+const HOME_POS = { x: 200 + OFFSET_X, y: 184 + OFFSET_Y };
+
+// 📦 재고 변경 시 앱에 브로드캐스트하는 공통 함수
+function broadcastStockUpdate() {
+  db.query('SELECT * FROM products', (err, results) => {
+    if (!err) {
+      io.emit('stock_updated', { products: results });
+      console.log('📦 재고 변경 → 앱 브로드캐스트 완료');
+    }
+  });
+}
+
+// 🚙 실제 로봇 주행 명령 함수
 function driveRobotTo(targetPos, productId, isReturn = false) {
   if (intervalId) {
     clearInterval(intervalId);
@@ -53,12 +69,32 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
   robotPosition.status = isReturn ? 'RETURNING' : 'MOVING';
   robotPosition.currentProductId = productId;
   robotPosition.path = [];
-  
-  for (let i = 1; i <= 5; i++) {
-    robotPosition.path.push({
-      x: robotPosition.x + ((targetPos.x - robotPosition.x) * (i / 5)),
-      y: robotPosition.y + ((targetPos.y - robotPosition.y) * (i / 5))
-    });
+
+  const realPixelX = targetPos.x - OFFSET_X;
+  const realPixelY = targetPos.y - OFFSET_Y;
+  const rosTargetX = ((MAP_HEIGHT_PIXELS - realPixelY) * RESOLUTION) + ORIGIN_X;
+  const rosTargetY = (realPixelX * RESOLUTION) + ORIGIN_Y;
+
+  console.log(`🎯 [목적지 전송] 터치(${Math.round(targetPos.x)}, ${Math.round(targetPos.y)}) -> 진짜픽셀(${Math.round(realPixelX)}, ${Math.round(realPixelY)}) -> ROS(${rosTargetX.toFixed(2)}m, ${rosTargetY.toFixed(2)}m)`);
+
+  const goalMsg = {
+    op: 'publish',
+    topic: '/move_base_simple/goal',
+    type: 'geometry_msgs/PoseStamped',
+    msg: {
+      header: { seq: 0, stamp: { secs: 0, nsecs: 0 }, frame_id: 'map' },
+      pose: {
+        position: { x: rosTargetX, y: rosTargetY, z: 0.0 },
+        orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+      }
+    }
+  };
+
+  if (rosWs.readyState === WebSocket.OPEN) {
+    rosWs.send(JSON.stringify(goalMsg));
+    console.log(`📡 ROS 목적지 전송 완료 → x: ${rosTargetX.toFixed(2)}m, y: ${rosTargetY.toFixed(2)}m`);
+  } else {
+    console.error('❌ ROSbridge 연결 끊김 — 목적지 전송 실패');
   }
 
   io.emit('robot_position', robotPosition);
@@ -70,47 +106,28 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
       return;
     }
 
-    let dx = targetPos.x - robotPosition.x;
-    let dy = targetPos.y - robotPosition.y;
-    let distance = Math.sqrt(dx * dx + dy * dy);
+    const dx = targetPos.x - robotPosition.x;
+    const dy = targetPos.y - robotPosition.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
 
-    if (distance > 0.5) robotPosition.heading = Math.atan2(dy, dx);
-    if (robotPosition.battery > 0) robotPosition.battery = Math.max(0, Number((robotPosition.battery - 0.1).toFixed(1)));
-
-    robotPosition.obstacles = MOCK_MAP_OBSTACLES.filter(obs => {
-      let obsDist = Math.sqrt(Math.pow(obs.x - robotPosition.x, 2) + Math.pow(obs.y - robotPosition.y, 2));
-      return obsDist < 60; 
-    });
-
-    if (distance < 5) {
+    if (distance < 25) {
       clearInterval(intervalId);
       intervalId = null;
-      robotPosition.x = targetPos.x;
-      robotPosition.y = targetPos.y;
-      robotPosition.path = [];     
-      robotPosition.obstacles = [];
 
       if (isReturn) {
         robotPosition.status = 'IDLE';
-        console.log("🏠 로봇이 무사히 홈 기지에 복귀했습니다.");
+        console.log('🏠 로봇이 무사히 홈 기지에 복귀했습니다.');
         checkAndProcessQueue();
       } else {
         robotPosition.status = 'ARRIVED'; 
-        console.log("📍 로봇이 목적지에 도착했습니다. 손님의 수령을 기다립니다.");
+        console.log('📍 로봇이 목적지에 도착했습니다. 손님의 수령을 기다립니다.');
       }
       io.emit('robot_position', robotPosition);
-    } else {
-      robotPosition.x += (dx / distance) * 5;
-      robotPosition.y += (dy / distance) * 5;
-      robotPosition.path = robotPosition.path.filter(pt => {
-        return Math.sqrt(Math.pow(pt.x - robotPosition.x, 2) + Math.pow(pt.y - robotPosition.y, 2)) > 2;
-      });
-      io.emit('robot_position', robotPosition);
     }
-  }, 150);
+  }, 500);
 }
 
-// 📦 대기열 확인 및 다음 주문 처리 함수
+// 📦 대기열 확인 및 다음 주문 처리
 function checkAndProcessQueue() {
   if (orderQueue.length > 0) {
     const nextOrder = orderQueue.shift(); 
@@ -119,65 +136,59 @@ function checkAndProcessQueue() {
     driveRobotTo(nextOrder.targetPos, nextOrder.productId, false);
   }
 }
-/* 📡 --- ROSbridge 웹소켓 수동 다이렉트 연동부 --- */
 
-const rosWs = new WebSocket('ws://192.168.0.51:9090');
+/* 📡 --- ROSbridge 웹소켓 연동 (자동 재연결 포함) --- */
 
-rosWs.on('open', () => {
-  console.log('🟩 [ROSbridge] 로봇 라즈베리파이와 백엔드 서버가 다이렉트로 연결되었습니다!');
-  
-  const subscribeMessage = {
-    op: 'subscribe',
-    topic: '/odom', // 현재 텔레옵 주행 중인 오돔 토픽
-    type: 'nav_msgs/Odometry'
-  };
-  rosWs.send(JSON.stringify(subscribeMessage));
-});
+function connectRosBridge() {
+  const ws = new WebSocket('ws://192.168.0.51:9090');
 
-rosWs.on('message', (data) => {
-  try {
-    const rawData = JSON.parse(data);
-    
-    if (rawData.op === 'publish' && rawData.topic === '/odom') {
-      const msg = rawData.msg;
-      
-      // 1. ROS 실제 지도 평면 좌표 (미터 단위)
-      const rosX = msg.pose.pose.position.x;
-      const rosY = msg.pose.pose.position.y;
-      
-      // 2. 쿼터니언 회전 구조값을 라디안(Heading 각도)으로 계산
-      const q = msg.pose.pose.orientation;
-      const heading = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
-      
-      // 3. 🗺️ [초정밀] YAML 기반 매핑 비례식 적용
-      const RESOLUTION = 0.05;
-      const ORIGIN_X = -10.0;
-      const ORIGIN_Y = -10.0;
-      const MAP_HEIGHT_PIXELS = 500; // 💡 기존 앱의 지도 이미지 픽셀 높이에 맞게 수정해 줘!
-      
-      // 공식 대입: 미터 좌표를 정확한 픽셀 좌표로 환산
-      robotPosition.x = (rosX - ORIGIN_X) / RESOLUTION;
-      robotPosition.y = MAP_HEIGHT_PIXELS - ((rosY - ORIGIN_Y) / RESOLUTION); // Y축 반전 보정
-      robotPosition.heading = heading;
-      
-      // 디버깅용 실시간 로그 출력
-      console.log(`📍 실시간 매핑 좌표 -> 앱 화면 X: ${robotPosition.x.toFixed(1)}px, Y: ${robotPosition.y.toFixed(1)}px`);
-      
-      // 4. 기존 디자인을 유지 중인 리액트 네이티브 앱으로 실시간 전송
-      io.emit('robot_position', robotPosition);
+  ws.on('open', () => {
+    console.log('🟩 [ROSbridge] 로봇 라즈베리파이와 연결되었습니다!');
+    ws.send(JSON.stringify({ op: 'subscribe', topic: '/odom', type: 'nav_msgs/Odometry' }));
+    ws.send(JSON.stringify({ op: 'advertise', topic: '/move_base_simple/goal', type: 'geometry_msgs/PoseStamped' }));
+  });
+
+  ws.on('message', (data) => {
+    try {
+      const rawData = JSON.parse(data);
+      if (rawData.op === 'publish' && rawData.topic === '/odom') {
+        const msg = rawData.msg;
+        const rosX = msg.pose.pose.position.x;
+        const rosY = msg.pose.pose.position.y;
+        const q = msg.pose.pose.orientation;
+        const heading = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+        const mapPixelX = (rosY - ORIGIN_Y) / RESOLUTION;
+        const mapPixelY = MAP_HEIGHT_PIXELS - ((rosX - ORIGIN_X) / RESOLUTION);
+        robotPosition.x = mapPixelX + OFFSET_X;
+        robotPosition.y = mapPixelY + OFFSET_Y;
+        robotPosition.heading = heading - (Math.PI / 2);
+        io.emit('robot_position', robotPosition);
+      }
+    } catch (err) {
+      console.error('⚠️ [ROS 데이터 파싱 오류]:', err);
     }
-  } catch (err) {
-    console.error("⚠️ [ROS 데이터 파싱 오류]:", err);
-  }
-});
+  });
 
+  ws.on('close', () => {
+    console.warn('⚠️ ROSbridge 연결 끊김. 5초 후 재연결 시도...');
+    setTimeout(() => { rosWs = connectRosBridge(); }, 5000);
+  });
 
-/* --- API 라우터 파트 --- */
+  ws.on('error', (err) => {
+    console.error('❌ ROSbridge 오류:', err.message);
+  });
+
+  return ws;
+}
+
+let rosWs = connectRosBridge();
+
+/* --- API 라우터 --- */
 
 app.post('/api/signup', (req, res) => {
   const { userId, password, name } = req.body;
   db.query('INSERT INTO users (userId, password, name) VALUES (?, ?, ?)', [userId, password, name], (err) => {
-    if (err) return res.status(500).json({ success: false });
+    if (err) return res.status(500).json({ success: false, message: '이미 존재하는 아이디입니다.' });
     return res.json({ success: true });
   });
 });
@@ -185,40 +196,55 @@ app.post('/api/signup', (req, res) => {
 app.post('/api/login', (req, res) => {
   const { userId, password } = req.body;
   db.query('SELECT id, userId, name, role FROM users WHERE userId = ? AND password = ?', [userId, password], (err, results) => {
+    if (err) return res.status(500).json({ success: false, message: '서버 오류' });
     if (results.length > 0) return res.json({ success: true, user: results[0] });
-    return res.status(401).json({ success: false });
+    return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 틀렸습니다.' });
   });
 });
 
 app.get('/api/products', (req, res) => {
-  db.query('SELECT * FROM products', (err, results) => res.json({ success: true, products: results }));
+  db.query('SELECT * FROM products', (err, results) => {
+    if (err) return res.status(500).json({ success: false });
+    res.json({ success: true, products: results });
+  });
 });
 
 app.post('/api/products/restock', (req, res) => {
-  db.query('UPDATE products SET stock = stock + 1 WHERE id = ?', [req.body.productId], () => res.json({ success: true }));
+  db.query('UPDATE products SET stock = stock + 1 WHERE id = ?', [req.body.productId], (err) => {
+    if (err) return res.status(500).json({ success: false });
+    broadcastStockUpdate(); // ✅ 추가
+    res.json({ success: true });
+  });
 });
 
 app.post('/api/products/add', (req, res) => {
   const { name, price, stock, icon } = req.body;
-  db.query('INSERT INTO products (name, price, stock, icon) VALUES (?, ?, ?, ?)', [name, price, stock, icon], () => res.json({ success: true }));
+  db.query('INSERT INTO products (name, price, stock, icon) VALUES (?, ?, ?, ?)', [name, price, stock, icon], (err) => {
+    if (err) return res.status(500).json({ success: false });
+    broadcastStockUpdate(); // ✅ 추가
+    res.json({ success: true });
+  });
 });
 
 app.post('/api/products/delete', (req, res) => {
   const { productId } = req.body;
-  db.query('DELETE FROM products WHERE id = ?', [productId], () => res.json({ success: true }));
+  db.query('DELETE FROM products WHERE id = ?', [productId], (err) => {
+    if (err) return res.status(500).json({ success: false });
+    broadcastStockUpdate(); // ✅ 추가
+    res.json({ success: true });
+  });
 });
 
-// 🔄 음료 수령 완료 API -> 다중 선택 수량(quantity) 완벽 반영 및 일괄 인서트 처리
 app.post('/api/products/purchase-complete', (req, res) => {
   const { productId, quantity } = req.body;
   
   const targetProductId = productId || robotPosition.currentProductId;
   const targetQuantity = parseInt(quantity, 10) || 1;
 
-  if (!targetProductId) return res.status(400).json({ success: false, message: "상품 정보가 유실되었습니다." });
+  if (!targetProductId) return res.status(400).json({ success: false, message: '상품 정보가 유실되었습니다.' });
   
   db.query('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', [targetQuantity, targetProductId, targetQuantity], (err, results) => {
-    if (err || results.affectedRows === 0) return res.status(400).json({ success: false, message: "재고가 부족하여 처리가 불가능합니다." });
+    if (err || results.affectedRows === 0) return res.status(400).json({ success: false, message: '재고가 부족하여 처리가 불가능합니다.' });
     
     db.query('SELECT price FROM products WHERE id = ?', [targetProductId], (priceErr, priceResults) => {
       if (priceErr || priceResults.length === 0) return res.status(500).json({ success: false });
@@ -231,17 +257,18 @@ app.post('/api/products/purchase-complete', (req, res) => {
 
       db.query('INSERT INTO orders (product_id, price) VALUES ?', [bulkOrderData], (orderErr) => {
         if (orderErr) {
-          console.error("❌ 주문 내역 인서트 중 오류 발생:", orderErr);
+          console.error('❌ 주문 내역 인서트 중 오류 발생:', orderErr);
           return res.status(500).json({ success: false });
         }
 
         robotPosition.currentProductId = null;
-        
+        broadcastStockUpdate(); // ✅ 추가
+
         if (orderQueue.length > 0) {
           checkAndProcessQueue();
         } else {
-          console.log("💤 대기 주문이 없습니다. 홈 기지로 복귀합니다.");
-          driveRobotTo({ x: 0, y: 0 }, null, true);
+          console.log('💤 대기 주문이 없습니다. 홈 기지로 복귀합니다.');
+          driveRobotTo(HOME_POS, null, true);
         }
 
         return res.json({ success: true });
@@ -254,7 +281,6 @@ app.get('/api/admin/stats', (req, res) => {
   db.query('SELECT IFNULL(SUM(price), 0) AS total_revenue FROM orders', (err, revResults) => {
     if (err) return res.status(500).json({ success: false });
     const totalRevenue = revResults[0].total_revenue;
-
     db.query(`
       SELECT p.name, COUNT(o.id) AS sales_count 
       FROM orders o 
@@ -271,40 +297,44 @@ app.get('/api/admin/stats', (req, res) => {
 });
 
 app.post('/api/admin/robot/force-reset', (req, res) => {
-  if (intervalId) {
-    clearInterval(intervalId);
-    intervalId = null;
-  }
-  
+  if (intervalId) { clearInterval(intervalId); intervalId = null; }
   orderQueue = [];
   io.emit('queue_updated', orderQueue);
-
-  robotPosition.x = 0;
-  robotPosition.y = 0;
+  robotPosition.x = HOME_POS.x;
+  robotPosition.y = HOME_POS.y;
   robotPosition.heading = 0;
   robotPosition.status = 'IDLE';
   robotPosition.battery = 100;
   robotPosition.currentProductId = null;
   robotPosition.path = [];
   robotPosition.obstacles = [];
-
   io.emit('robot_position', robotPosition);
-  console.log("🚨 [ADMIN COMMAND] 로봇 긴급 정지 및 주문 대기열 초기화 완료!");
+  console.log('🚨 [ADMIN COMMAND] 로봇 긴급 정지 및 주문 대기열 초기화 완료!');
   return res.json({ success: true });
 });
 
-/* --- 웹소켓(Socket.io) 파트 --- */
+// ✅ 추가 — 웹(Spring Boot)에서 재고 변경 시 호출하는 엔드포인트
+app.post('/api/stock-updated', (req, res) => {
+  broadcastStockUpdate();
+  res.json({ success: true });
+});
+
+/* --- 웹소켓(Socket.io) --- */
 
 io.on('connection', (socket) => {
   socket.emit('robot_position', robotPosition);
   socket.emit('queue_updated', orderQueue);
 
+  // ✅ 추가 — 새로 연결된 앱에 현재 재고도 바로 전송
+  db.query('SELECT * FROM products', (err, results) => {
+    if (!err) socket.emit('stock_updated', { products: results });
+  });
+
   socket.on('call_robot', (data) => {
     const { targetPos, productId } = data;
     const newOrder = { targetPos, productId };
-
-    if (robotPosition.status === 'IDLE' || robotPosition.status === 'RETURNING') {
-      console.log("🛒 로봇이 즉시 주문을 처리하러 출발합니다.");
+    if (['IDLE', 'RETURNING', 'ARRIVED'].includes(robotPosition.status)) {
+      console.log(`🛒 로봇이 즉시 주문을 처리하러 출발합니다. (현재 상태: ${robotPosition.status})`);
       driveRobotTo(targetPos, productId, false);
     } else {
       orderQueue.push(newOrder);

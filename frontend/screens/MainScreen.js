@@ -7,10 +7,14 @@ import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
 const SERVER_URL = 'http://192.168.0.49:4000';
+const ROSBRIDGE_URL = 'ws://192.168.0.51:9090';
 
 export default function MainScreen({ user, setUser }) {
   const [status, setStatus] = useState('IDLE');
-  const [battery, setBattery] = useState(100);
+  // 💡 배터리 초기값을 구분을 위해 '--'로 변경하고 전압 상태 추가
+  const [battery, setBattery] = useState('--');
+  const [voltage, setVoltage] = useState('--');
+  
   const [isModalVisible, setModalVisible] = useState(false);
 
   const [products, setProducts] = useState([]);
@@ -58,24 +62,28 @@ export default function MainScreen({ user, setUser }) {
         mapImg.crossOrigin = "Anonymous";
         mapImg.src = 'http://192.168.0.49:4000/assets/test_map.png';
 
-        // 💡 백엔드에서 제공하는 초정밀 픽셀 기준 초기화
+        // 백엔드에서 제공하는 초정밀 픽셀 기준 초기화
         let currentRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
         let targetRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
         let state = { targetX: 310, targetY: 350, path: [], obstacles: [] };
         
-        // 💡 카메라 상태에 rotation(회전) 속성 추가
-        let camera = { x: 0, y: 0, scale: 1.0, rotation: 0 };
+        let camera = { x: 0, y: 0, scale: 1.0, rotation: 0, isCentered: false };
         let isDragging = false;
         let dragStart = { x: 0, y: 0 };
         let touchStartX = 0; let touchStartY = 0; let isMoved = false;
         
-        // 💡 회전을 위한 초기 변수 추가
         let initialPinchDistance = null; let initialScale = 1;
         let initialPinchAngle = null; let initialRotation = 0;
 
         function resize() {
           canvas.width = window.innerWidth || 300;
           canvas.height = window.innerHeight || 300;
+
+          if (!camera.isCentered && canvas.width > 0) {
+            camera.x = (canvas.width / 2) - 310;
+            camera.y = (canvas.height / 2) - 350;
+            camera.isCentered = true;
+          }
         }
         window.addEventListener('resize', resize);
         resize();
@@ -113,7 +121,6 @@ export default function MainScreen({ user, setUser }) {
           if (!isMoved) handleMapClick(e.clientX, e.clientY);
         });
 
-        // 💡 휠 이벤트: Shift키를 누른 상태로 휠을 돌리면 회전, 아니면 줌인/아웃
         canvas.addEventListener('wheel', (e) => {
           e.preventDefault();
           if (e.shiftKey) {
@@ -134,7 +141,6 @@ export default function MainScreen({ user, setUser }) {
             const dx = e.touches[1].clientX - e.touches[0].clientX;
             const dy = e.touches[1].clientY - e.touches[0].clientY;
             
-            // 💡 두 손가락 거리 및 각도 저장
             initialPinchDistance = Math.hypot(dx, dy);
             initialPinchAngle = Math.atan2(dy, dx);
             initialScale = camera.scale;
@@ -151,7 +157,6 @@ export default function MainScreen({ user, setUser }) {
             const dx = e.touches[1].clientX - e.touches[0].clientX;
             const dy = e.touches[1].clientY - e.touches[0].clientY;
             
-            // 💡 거리로 줌인/아웃, 각도로 회전 계산
             const currentDist = Math.hypot(dx, dy);
             const currentAngle = Math.atan2(dy, dx);
             
@@ -164,13 +169,10 @@ export default function MainScreen({ user, setUser }) {
           if (!isMoved && e.changedTouches.length === 1) handleMapClick(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
         });
 
-        // 💡 회전각을 반영한 좌표 클릭 변환 공식
         function handleMapClick(screenX, screenY) {
-          // 1. 카메라 이동량 및 스케일 제거
           const dx = (screenX - camera.x) / camera.scale;
           const dy = (screenY - camera.y) / camera.scale;
           
-          // 2. 화면이 돌아간 만큼 마우스 좌표를 역회전하여 실제 월드 좌표 도출
           const worldX = dx * Math.cos(-camera.rotation) - dy * Math.sin(-camera.rotation);
           const worldY = dx * Math.sin(-camera.rotation) + dy * Math.cos(-camera.rotation);
           
@@ -190,18 +192,16 @@ export default function MainScreen({ user, setUser }) {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.save();
           
-          // 💡 카메라 상태 캔버스에 적용 (이동 -> 스케일 -> 회전 순서)
           ctx.translate(camera.x, camera.y);
           ctx.scale(camera.scale, camera.scale);
           ctx.rotate(camera.rotation);
 
           if (mapImg.complete) {
-            ctx.globalAlpha = 0.8; // 지도를 80% 불투명도
+            ctx.globalAlpha = 0.8; 
             ctx.drawImage(mapImg, 0, 0, 600, 600); 
-            ctx.globalAlpha = 1.0; // 투명도 원상복구
+            ctx.globalAlpha = 1.0; 
           }
 
-          // 이하 기존 그리기 로직 (격자, 경로, 로봇 등)
           const gridSize = 50;
           ctx.strokeStyle = '#ede8e0'; ctx.lineWidth = 1 / camera.scale;
           ctx.fillStyle = '#9e8c7a'; ctx.font = (10 / camera.scale) + 'px sans-serif';
@@ -264,18 +264,38 @@ export default function MainScreen({ user, setUser }) {
     </html>
 `;
 
-  // 💡 [수정] 의존성 배열을 빈 배열([])로 만들어 최초 한 번만 소켓 연결을 수립
+  // --- 💡 [수정됨] 소켓 및 ROS 설정 (순수 웹소켓 브릿지 버전) ---
   useEffect(() => {
+    // 1. 기존 Node.js 백엔드 연결 (로봇 제어 및 좌표)
     socketRef.current = io(SERVER_URL);
+
+    // 실시간 웹(Spring Boot) 연동 재고 동기화 수신부
+    socketRef.current.on('stock_updated', (data) => {
+      // 1. 메뉴판 전체 데이터 실시간 업데이트
+      setProducts(data.products);
+      
+      // 2. 만약 사용자가 이미 어떤 음료를 선택한 상태였다면?
+      setSelectedProduct(prevSelected => {
+        if (!prevSelected) return null;
+        
+        // 새로 업데이트된 데이터에서 현재 선택한 음료 찾기
+        const updatedItem = data.products.find(p => p.id === prevSelected.id);
+        if (updatedItem) {
+          // 웹 관리자가 재고를 줄여버려서, 현재 고른 수량보다 재고가 적어지면 강제로 수량 내림!
+          setQuantity(prevQ => Math.min(prevQ, updatedItem.stock > 0 ? updatedItem.stock : 1));
+          return updatedItem;
+        }
+        return null; // 관리자가 상품을 아예 삭제한 경우 선택 해제
+      });
+    });
 
     socketRef.current.on('robot_position', (data) => {
       setRobotData(data);
-      if (data.battery !== undefined) setBattery(data.battery);
 
       if (webViewRef.current) {
         webViewRef.current.postMessage(JSON.stringify({
           x: data.x, y: data.y, heading: data.heading, 
-          targetX: targetPosRef.current.x, targetY: targetPosRef.current.y, // Ref로 안전하게 접근
+          targetX: targetPosRef.current.x, targetY: targetPosRef.current.y, 
           path: data.path, obstacles: data.obstacles
         }));
       }
@@ -283,14 +303,62 @@ export default function MainScreen({ user, setUser }) {
       setStatus((prevStatus) => {
         if (prevStatus !== 'ARRIVED' && data.status === 'ARRIVED') {
           Vibration.vibrate(1000);
-          Alert.alert("🤖 로봇 도착 완료!", `로봇이 지정하신 목적지에 도착했습니다.\n배터리: ${data.battery}%`);
+          Alert.alert("🤖 로봇 도착 완료!", `로봇이 지정하신 목적지에 도착했습니다.`);
         }
         return data.status;
       });
     });
 
-    return () => { if (socketRef.current) socketRef.current.disconnect(); };
-  }, []); // 소켓 커넥션 단일화 보장
+    // 2. 💡 [변경] 라이브러리 없이 ROSBridge 웹소켓 직접 연결
+    const rosWs = new WebSocket(ROSBRIDGE_URL);
+
+    rosWs.onopen = () => {
+      console.log('✅ ROS 웹소켓 브릿지 직접 연결 성공!');
+      
+      // 💡 ROSBridge 규격에 맞게 /battery_state 토픽 구독(Subscribe) 메시지 전송
+      const subscribeMessage = {
+        op: 'subscribe',
+        topic: '/battery_state',
+        type: 'sensor_msgs/BatteryState'
+      };
+      rosWs.send(JSON.stringify(subscribeMessage));
+    };
+
+    rosWs.onmessage = (event) => {
+      try {
+        const rosData = JSON.parse(event.data);
+        
+        // 들어온 메시지가 우리가 구독한 토픽인지 확인
+        if (rosData.op === 'publish' && rosData.topic === '/battery_state') {
+          const message = rosData.msg;
+          
+          // 0.5418 -> 54 변환
+          const percent = Math.round(message.percentage * 100);
+          setBattery(percent);
+          
+          // 전압값 반영
+          if (message.voltage) {
+            setVoltage(message.voltage.toFixed(1));
+          }
+        }
+      } catch (e) {
+        console.error('ROS 메시지 파싱 에러:', e);
+      }
+    };
+
+    rosWs.onerror = (error) => {
+      console.error('❌ ROS 웹소켓 직접 연결 에러:', error);
+    };
+
+    return () => { 
+      if (socketRef.current) socketRef.current.disconnect(); 
+      // 컴포넌트 언마운트 시 구독 해제 및 웹소켓 닫기
+      if (rosWs.readyState === WebSocket.OPEN) {
+        rosWs.send(JSON.stringify({ op: 'unsubscribe', topic: '/battery_state' }));
+        rosWs.close();
+      }
+    };
+  }, []);
 
   const handleWebViewMessage = (event) => {
     const data = JSON.parse(event.nativeEvent.data);
@@ -382,7 +450,9 @@ export default function MainScreen({ user, setUser }) {
               <Text style={styles.logoText}>PIMTO SYSTEM</Text>
               <Text style={styles.subtitleText}>자율주행 모빌리티 배송 플랫폼</Text>
             </View>
-            <TouchableOpacity style={styles.logoutButton} onPress={() => setUser(null)}><Text style={styles.logoutButtonText}>로그아웃</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.logoutButton} onPress={() => setUser(null)}>
+              <Text style={styles.logoutButtonText}>로그아웃</Text>
+            </TouchableOpacity>
           </View>
           
           <View style={{ marginTop: 8, padding: 10, backgroundColor: '#f5f6f8', borderRadius: 6 }}>
@@ -410,7 +480,12 @@ export default function MainScreen({ user, setUser }) {
               <View style={[styles.statusDot, status === 'MOVING' ? { backgroundColor: '#00ff9d' } : { backgroundColor: '#ff9e64' }]} />
               <Text style={styles.statusText}>상태: {status === 'MOVING' ? '🚀 배송중' : status === 'ARRIVED' ? '✅ 도착함' : '💤 대기중'}</Text>
             </View>
-            <View style={styles.statusBadge}><Text style={styles.statusText}>🔋 배터리: {battery}%</Text></View>
+            {/* 💡 [수정됨] 배터리 이모지 및 전압값 반영 UI */}
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusText}>
+                {battery !== '--' && battery <= 20 ? '🪫' : '🔋'} 배터리: {battery}{battery !== '--' ? '%' : ''} {voltage !== '--' ? `(${voltage}V)` : ''}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -506,7 +581,9 @@ export default function MainScreen({ user, setUser }) {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-              <TouchableOpacity style={styles.closeButton} onPress={() => setStockModalVisible(false)}><Text style={styles.closeButtonText}>닫기</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.closeButton} onPress={() => setStockModalVisible(false)}>
+                <Text style={styles.closeButtonText}>닫기</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
