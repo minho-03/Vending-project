@@ -11,7 +11,6 @@ const ROSBRIDGE_URL = 'ws://192.168.0.51:9090';
 
 export default function MainScreen({ user, setUser }) {
   const [status, setStatus] = useState('IDLE');
-  // 💡 배터리 초기값을 구분을 위해 '--'로 변경하고 전압 상태 추가
   const [battery, setBattery] = useState('--');
   const [voltage, setVoltage] = useState('--');
   
@@ -34,13 +33,12 @@ export default function MainScreen({ user, setUser }) {
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
   
-  // 💡 targetPos의 실시간 추적을 위한 Ref 선언 (소켓 재연결 방지)
   const targetPosRef = useRef(targetPos);
   useEffect(() => {
     targetPosRef.current = targetPos;
   }, [targetPos]);
 
-  // --- 🌐 관제 맵 HTML/CSS 설정 (백엔드 매핑 픽셀 최적화 버전) ---
+  // --- 🌐 관제 맵 HTML/CSS 설정 ---
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -62,7 +60,6 @@ export default function MainScreen({ user, setUser }) {
         mapImg.crossOrigin = "Anonymous";
         mapImg.src = 'http://192.168.0.49:4000/assets/test_map.png';
 
-        // 백엔드에서 제공하는 초정밀 픽셀 기준 초기화
         let currentRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
         let targetRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
         let state = { targetX: 310, targetY: 350, path: [], obstacles: [] };
@@ -264,28 +261,20 @@ export default function MainScreen({ user, setUser }) {
     </html>
 `;
 
-  // --- 💡 [수정됨] 소켓 및 ROS 설정 (순수 웹소켓 브릿지 버전) ---
+  // --- 소켓 및 ROS 설정 ---
   useEffect(() => {
-    // 1. 기존 Node.js 백엔드 연결 (로봇 제어 및 좌표)
     socketRef.current = io(SERVER_URL);
 
-    // 실시간 웹(Spring Boot) 연동 재고 동기화 수신부
     socketRef.current.on('stock_updated', (data) => {
-      // 1. 메뉴판 전체 데이터 실시간 업데이트
       setProducts(data.products);
-      
-      // 2. 만약 사용자가 이미 어떤 음료를 선택한 상태였다면?
       setSelectedProduct(prevSelected => {
         if (!prevSelected) return null;
-        
-        // 새로 업데이트된 데이터에서 현재 선택한 음료 찾기
         const updatedItem = data.products.find(p => p.id === prevSelected.id);
         if (updatedItem) {
-          // 웹 관리자가 재고를 줄여버려서, 현재 고른 수량보다 재고가 적어지면 강제로 수량 내림!
-          setQuantity(prevQ => Math.min(prevQ, updatedItem.stock > 0 ? updatedItem.stock : 1));
+          setQuantity(prevQ => Math.min(prevQ, updatedItem.stock > 0 ? Math.min(updatedItem.stock, 2) : 1));
           return updatedItem;
         }
-        return null; // 관리자가 상품을 아예 삭제한 경우 선택 해제
+        return null;
       });
     });
 
@@ -309,34 +298,20 @@ export default function MainScreen({ user, setUser }) {
       });
     });
 
-    // 2. 💡 [변경] 라이브러리 없이 ROSBridge 웹소켓 직접 연결
     const rosWs = new WebSocket(ROSBRIDGE_URL);
 
     rosWs.onopen = () => {
       console.log('✅ ROS 웹소켓 브릿지 직접 연결 성공!');
-      
-      // 💡 ROSBridge 규격에 맞게 /battery_state 토픽 구독(Subscribe) 메시지 전송
-      const subscribeMessage = {
-        op: 'subscribe',
-        topic: '/battery_state',
-        type: 'sensor_msgs/BatteryState'
-      };
-      rosWs.send(JSON.stringify(subscribeMessage));
+      rosWs.send(JSON.stringify({ op: 'subscribe', topic: '/battery_state', type: 'sensor_msgs/BatteryState' }));
     };
 
     rosWs.onmessage = (event) => {
       try {
         const rosData = JSON.parse(event.data);
-        
-        // 들어온 메시지가 우리가 구독한 토픽인지 확인
         if (rosData.op === 'publish' && rosData.topic === '/battery_state') {
           const message = rosData.msg;
-          
-          // 0.5418 -> 54 변환
           const percent = Math.round(message.percentage * 100);
           setBattery(percent);
-          
-          // 전압값 반영
           if (message.voltage) {
             setVoltage(message.voltage.toFixed(1));
           }
@@ -352,7 +327,6 @@ export default function MainScreen({ user, setUser }) {
 
     return () => { 
       if (socketRef.current) socketRef.current.disconnect(); 
-      // 컴포넌트 언마운트 시 구독 해제 및 웹소켓 닫기
       if (rosWs.readyState === WebSocket.OPEN) {
         rosWs.send(JSON.stringify({ op: 'unsubscribe', topic: '/battery_state' }));
         rosWs.close();
@@ -383,26 +357,31 @@ export default function MainScreen({ user, setUser }) {
         { 
           text: "결제하기", 
           onPress: () => { 
-            let generatedQrs = [];
+            let generatedSlots = []; // 🟩 배출할 슬롯 번호들을 임시 저장할 배열
             let tempCoffee = coffeeSlot;
             let tempCola = colaSlot;
             const productName = selectedProduct.name;
 
             for (let i = 0; i < quantity; i++) {
               if (productName.includes("레쓰비") || productName.includes("커피")) {
-                generatedQrs.push(String(tempCoffee));
+                generatedSlots.push(String(tempCoffee));
                 tempCoffee = tempCoffee === 1 ? 2 : 1;
               } else if (productName.includes("콜라") || productName.includes("펩시")) {
-                generatedQrs.push(String(tempCola));
+                generatedSlots.push(String(tempCola));
                 tempCola = tempCola === 3 ? 4 : 3;
               } else {
-                generatedQrs.push("1");
+                generatedSlots.push("1");
               }
             }
 
+            // 🟩 핵심: 여러 개의 슬롯 번호를 쉼표로 연결하여 "1,2" 또는 "3" 같은 하나의 문자열로 만듭니다.
+            const combinedQrData = generatedSlots.join(",");
+
             setCoffeeSlot(tempCoffee);
             setColaSlot(tempCola);
-            setQrList(generatedQrs); 
+            
+            // 🟩 리스트에는 오직 단 1개의 합쳐진 데이터만 넣습니다.
+            setQrList([combinedQrData]); 
             setCurrentQrIndex(0);    
             setModalVisible(true); 
           } 
@@ -467,7 +446,21 @@ export default function MainScreen({ user, setUser }) {
                     <Text style={{ fontWeight: 'bold', color: '#c47d4a' }}>-</Text>
                   </TouchableOpacity>
                   <Text style={{ paddingHorizontal: 10, fontWeight: 'bold', color: '#3d2c1e' }}>{quantity}</Text>
-                  <TouchableOpacity style={{ paddingHorizontal: 12, paddingVertical: 4 }} onPress={() => setQuantity(q => Math.min(selectedProduct.stock, q + 1))}>
+                  <TouchableOpacity 
+                    style={{ paddingHorizontal: 12, paddingVertical: 4 }} 
+                    onPress={() => {
+                      const maxLimit = Math.min(selectedProduct.stock, 2);
+                      if (quantity >= maxLimit) {
+                        if (selectedProduct.stock < 2) {
+                          Alert.alert("재고 부족", "현재 자판기에 남은 수량이 1개뿐입니다.");
+                        } else {
+                          Alert.alert("수량 제한", "자판기 구조상 한 번에 최대 2개까지만 구매할 수 있습니다.");
+                        }
+                      } else {
+                        setQuantity(q => q + 1);
+                      }
+                    }}
+                  >
                     <Text style={{ fontWeight: 'bold', color: '#c47d4a' }}>+</Text>
                   </TouchableOpacity>
                 </View>
@@ -480,7 +473,6 @@ export default function MainScreen({ user, setUser }) {
               <View style={[styles.statusDot, status === 'MOVING' ? { backgroundColor: '#00ff9d' } : { backgroundColor: '#ff9e64' }]} />
               <Text style={styles.statusText}>상태: {status === 'MOVING' ? '🚀 배송중' : status === 'ARRIVED' ? '✅ 도착함' : '💤 대기중'}</Text>
             </View>
-            {/* 💡 [수정됨] 배터리 이모지 및 전압값 반영 UI */}
             <View style={styles.statusBadge}>
               <Text style={styles.statusText}>
                 {battery !== '--' && battery <= 20 ? '🪫' : '🔋'} 배터리: {battery}{battery !== '--' ? '%' : ''} {voltage !== '--' ? `(${voltage}V)` : ''}
@@ -521,7 +513,7 @@ export default function MainScreen({ user, setUser }) {
             
             <TouchableOpacity style={[styles.subButton, qrList.length > 0 ? styles.qrActiveButton : null]} onPress={handleQRButtonPress}>
               <Text style={[styles.subButtonText, qrList.length > 0 ? styles.qrActiveText : null]}>
-                {qrList.length > 0 ? "📱 인증용 QR 보기" : "💳 결제 및 발급"}
+                {qrList.length > 0 ? "📱 인증용 통합 QR 보기" : "💳 결제 및 발급"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -532,29 +524,22 @@ export default function MainScreen({ user, setUser }) {
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>✅ 자판기 결제 승인 완료!</Text>
               <Text style={{ marginBottom: 15, color: '#666', textAlign: 'center' }}>
-                로봇이 도착하면 아래 QR을 순서대로 카메라에 인식시키세요.
+                로봇이 도착하면 아래 QR을 카메라에 한 번만 인식시키세요.
               </Text>
               
               <View style={styles.qrWrapper}>
                 {qrList.length > 0 && <QRCode value={qrList[currentQrIndex]} size={180} />}
               </View>
               
+              {/* 🟩 수정: 더 이상 "1번째", "2번째"를 나누지 않고 통합된 안내 문구를 보여줍니다. */}
               <Text style={{ marginVertical: 12, fontWeight: 'bold', color: '#c47d4a', fontSize: 15, textAlign: 'center' }}>
-                🥤 총 {qrList.length}개 중 [{currentQrIndex + 1}번째] 음료 수령 중
+                🥤 [{selectedProduct?.name}] {quantity}개 배출용 통합 QR
               </Text>
 
-              {currentQrIndex < qrList.length - 1 ? (
-                <TouchableOpacity 
-                  style={[styles.finishButton, { backgroundColor: '#c47d4a', marginBottom: 6 }]} 
-                  onPress={() => setCurrentQrIndex(currentQrIndex + 1)}
-                >
-                  <Text style={styles.finishButtonText}>➡️ 다음 음료 QR 띄우기</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={styles.finishButton} onPress={handleItemReceived}>
-                  <Text style={styles.finishButtonText}>🎁 모든 음료 수령 완료 및 QR 폐기</Text>
-                </TouchableOpacity>
-              )}
+              {/* 🟩 수정: 리스트가 1개뿐이므로 항상 완료 버튼만 보입니다. */}
+              <TouchableOpacity style={styles.finishButton} onPress={handleItemReceived}>
+                <Text style={styles.finishButtonText}>🎁 모든 음료 수령 완료 및 QR 폐기</Text>
+              </TouchableOpacity>
 
               <TouchableOpacity style={styles.closeButton} onPress={() => setModalVisible(false)}>
                 <Text style={styles.closeButtonText}>창 닫기</Text>
