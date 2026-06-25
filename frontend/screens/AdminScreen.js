@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Alert, RefreshControl, TextInput, StyleSheet } from 'react-native';
 import styles from '../styles/AdminStyles';
 
-const SERVER_URL = 'http://192.168.0.49:4000';
+const SERVER_URL = 'http://192.168.0.33:4000';
 
 export default function AdminScreen({ user, setUser }) {
   const [products, setProducts] = useState([]);

@@ -6,7 +6,7 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.49:4000';
+const SERVER_URL = 'http://192.168.0.33:4000';
 const ROSBRIDGE_URL = 'ws://192.168.0.51:9090';
 
 export default function MainScreen({ user, setUser }) {
