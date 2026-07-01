@@ -11,10 +11,12 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@stomp/stompjs": "^7.3.0",
     "express": "^5.2.1",
     "mysql2": "^3.22.4",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "websocket": "^1.0.35",
     "ws": "^8.21.0"
   }
 }

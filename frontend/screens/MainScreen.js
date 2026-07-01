@@ -6,10 +6,10 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.33:4000';
+const SERVER_URL = 'http://192.168.0.62:4000';
 const ROSBRIDGE_URL = 'ws://192.168.0.51:9090';
 
-export default function MainScreen({ user, setUser }) {
+export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry → onChat
   const [status, setStatus] = useState('IDLE');
   const [battery, setBattery] = useState('--');
   const [voltage, setVoltage] = useState('--');
@@ -357,7 +357,7 @@ export default function MainScreen({ user, setUser }) {
         { 
           text: "결제하기", 
           onPress: () => { 
-            let generatedSlots = []; // 🟩 배출할 슬롯 번호들을 임시 저장할 배열
+            let generatedSlots = [];
             let tempCoffee = coffeeSlot;
             let tempCola = colaSlot;
             const productName = selectedProduct.name;
@@ -374,13 +374,10 @@ export default function MainScreen({ user, setUser }) {
               }
             }
 
-            // 🟩 핵심: 여러 개의 슬롯 번호를 쉼표로 연결하여 "1,2" 또는 "3" 같은 하나의 문자열로 만듭니다.
             const combinedQrData = generatedSlots.join(",");
 
             setCoffeeSlot(tempCoffee);
             setColaSlot(tempCola);
-            
-            // 🟩 리스트에는 오직 단 1개의 합쳐진 데이터만 넣습니다.
             setQrList([combinedQrData]); 
             setCurrentQrIndex(0);    
             setModalVisible(true); 
@@ -397,7 +394,8 @@ export default function MainScreen({ user, setUser }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           productId: selectedProduct.id,
-          quantity: quantity 
+          quantity: quantity,
+          userName: user.name // ✅ 추가 — purchase_history 기록용 (웹 통계/등급 시스템 연동)
         })
       });
       
@@ -517,6 +515,14 @@ export default function MainScreen({ user, setUser }) {
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* ✅ 채팅 버튼 (문의하기 대체) */}
+          <TouchableOpacity
+            style={[styles.subButton, { marginTop: 8, flex: 1, width: '100%' }]}
+            onPress={onChat}
+          >
+            <Text style={styles.subButtonText}>💬 고객지원 채팅</Text>
+          </TouchableOpacity>
         </View>
 
         <Modal visible={isModalVisible} transparent={true} animationType="fade">
@@ -531,12 +537,10 @@ export default function MainScreen({ user, setUser }) {
                 {qrList.length > 0 && <QRCode value={qrList[currentQrIndex]} size={180} />}
               </View>
               
-              {/* 🟩 수정: 더 이상 "1번째", "2번째"를 나누지 않고 통합된 안내 문구를 보여줍니다. */}
               <Text style={{ marginVertical: 12, fontWeight: 'bold', color: '#c47d4a', fontSize: 15, textAlign: 'center' }}>
                 🥤 [{selectedProduct?.name}] {quantity}개 배출용 통합 QR
               </Text>
 
-              {/* 🟩 수정: 리스트가 1개뿐이므로 항상 완료 버튼만 보입니다. */}
               <TouchableOpacity style={styles.finishButton} onPress={handleItemReceived}>
                 <Text style={styles.finishButtonText}>🎁 모든 음료 수령 완료 및 QR 폐기</Text>
               </TouchableOpacity>

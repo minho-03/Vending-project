@@ -6,6 +6,8 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const mysql = require('mysql2');
 const WebSocket = require('ws');
+const { Client } = require('@stomp/stompjs');
+Object.assign(global, { WebSocket: require('websocket').w3cwebsocket });
 
 const app = express();
 app.use(cors());
@@ -46,7 +48,7 @@ const MAP_HEIGHT_PIXELS = 384;
 const OFFSET_X = 190;
 const OFFSET_Y = 127;
 
-// 🏠 홈 기지 픽셀 좌표 (ROS 원점 기준 역산)
+// 🏠 홈 기지 픽셀 좌표
 const HOME_POS = { x: 200 + OFFSET_X, y: 184 + OFFSET_Y };
 
 // 📦 재고 변경 시 앱에 브로드캐스트하는 공통 함수
@@ -58,6 +60,58 @@ function broadcastStockUpdate() {
     }
   });
 }
+
+// 💬 앱 유저별 소켓 매핑 (채팅 실시간 전송용)
+const userSockets = {}; // { userId: socket }
+
+/* 📡 --- STOMP (Spring Boot 채팅 연동) --- */
+let stompClient = null;
+
+function connectStomp() {
+  stompClient = new Client({
+    brokerURL: 'ws://localhost:8080/ws/websocket',
+    reconnectDelay: 5000,
+    onConnect: () => {
+      console.log('🟩 [STOMP] Spring Boot 채팅 서버 연결 성공!');
+
+      // 관리자가 앱 유저에게 보낸 메시지 수신
+      stompClient.subscribe('/user/admin/queue/chat', (frame) => {
+        try {
+          const msg = JSON.parse(frame.body);
+          console.log(`📨 관리자 → ${msg.userUsername}: ${msg.content}`);
+
+          // 해당 유저 앱에 실시간 전송
+          const targetSocket = userSockets[msg.userUsername];
+          if (targetSocket) {
+            targetSocket.emit('chat_message', {
+              content: msg.content,
+              fromAdmin: true,
+              time: msg.time || new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })
+            });
+          }
+
+          // DB에도 저장
+          db.query(
+            'INSERT INTO chat_message (user_username, content, from_admin, is_read, created_at) VALUES (?, ?, 1, 0, NOW())',
+            [msg.userUsername, msg.content]
+          );
+        } catch (e) {
+          console.error('STOMP 메시지 파싱 오류:', e);
+        }
+      });
+    },
+    onDisconnect: () => {
+      console.warn('⚠️ [STOMP] Spring Boot 채팅 서버 연결 끊김');
+    },
+    onStompError: (frame) => {
+      console.error('❌ [STOMP] 오류:', frame.headers['message']);
+    }
+  });
+
+  stompClient.activate();
+}
+
+connectStomp();
 
 // 🚙 실제 로봇 주행 명령 함수
 function driveRobotTo(targetPos, productId, isReturn = false) {
@@ -75,7 +129,7 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
   const rosTargetX = ((MAP_HEIGHT_PIXELS - realPixelY) * RESOLUTION) + ORIGIN_X;
   const rosTargetY = (realPixelX * RESOLUTION) + ORIGIN_Y;
 
-  console.log(`🎯 [목적지 전송] 터치(${Math.round(targetPos.x)}, ${Math.round(targetPos.y)}) -> 진짜픽셀(${Math.round(realPixelX)}, ${Math.round(realPixelY)}) -> ROS(${rosTargetX.toFixed(2)}m, ${rosTargetY.toFixed(2)}m)`);
+  console.log(`🎯 [목적지 전송] 터치(${Math.round(targetPos.x)}, ${Math.round(targetPos.y)}) -> ROS(${rosTargetX.toFixed(2)}m, ${rosTargetY.toFixed(2)}m)`);
 
   const goalMsg = {
     op: 'publish',
@@ -120,7 +174,7 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
         checkAndProcessQueue();
       } else {
         robotPosition.status = 'ARRIVED'; 
-        console.log('📍 로봇이 목적지에 도착했습니다. 손님의 수령을 기다립니다.');
+        console.log('📍 로봇이 목적지에 도착했습니다.');
       }
       io.emit('robot_position', robotPosition);
     }
@@ -212,7 +266,7 @@ app.get('/api/products', (req, res) => {
 app.post('/api/products/restock', (req, res) => {
   db.query('UPDATE products SET stock = stock + 1 WHERE id = ?', [req.body.productId], (err) => {
     if (err) return res.status(500).json({ success: false });
-    broadcastStockUpdate(); // ✅ 추가
+    broadcastStockUpdate();
     res.json({ success: true });
   });
 });
@@ -221,7 +275,7 @@ app.post('/api/products/add', (req, res) => {
   const { name, price, stock, icon } = req.body;
   db.query('INSERT INTO products (name, price, stock, icon) VALUES (?, ?, ?, ?)', [name, price, stock, icon], (err) => {
     if (err) return res.status(500).json({ success: false });
-    broadcastStockUpdate(); // ✅ 추가
+    broadcastStockUpdate();
     res.json({ success: true });
   });
 });
@@ -230,26 +284,29 @@ app.post('/api/products/delete', (req, res) => {
   const { productId } = req.body;
   db.query('DELETE FROM products WHERE id = ?', [productId], (err) => {
     if (err) return res.status(500).json({ success: false });
-    broadcastStockUpdate(); // ✅ 추가
+    broadcastStockUpdate();
     res.json({ success: true });
   });
 });
 
 app.post('/api/products/purchase-complete', (req, res) => {
-  const { productId, quantity } = req.body;
+  const { productId, quantity, userName } = req.body;
   
   const targetProductId = productId || robotPosition.currentProductId;
   const targetQuantity = parseInt(quantity, 10) || 1;
+  const buyerName = userName || '앱사용자';
 
   if (!targetProductId) return res.status(400).json({ success: false, message: '상품 정보가 유실되었습니다.' });
   
   db.query('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', [targetQuantity, targetProductId, targetQuantity], (err, results) => {
     if (err || results.affectedRows === 0) return res.status(400).json({ success: false, message: '재고가 부족하여 처리가 불가능합니다.' });
     
-    db.query('SELECT price FROM products WHERE id = ?', [targetProductId], (priceErr, priceResults) => {
+    db.query('SELECT name, price FROM products WHERE id = ?', [targetProductId], (priceErr, priceResults) => {
       if (priceErr || priceResults.length === 0) return res.status(500).json({ success: false });
       
+      const productName = priceResults[0].name;
       const productPrice = priceResults[0].price;
+
       const bulkOrderData = [];
       for (let i = 0; i < targetQuantity; i++) {
         bulkOrderData.push([targetProductId, productPrice]);
@@ -261,8 +318,21 @@ app.post('/api/products/purchase-complete', (req, res) => {
           return res.status(500).json({ success: false });
         }
 
+        // purchase_history에도 기록
+        const historyData = [];
+        for (let i = 0; i < targetQuantity; i++) {
+          historyData.push([productName, productPrice, buyerName]);
+        }
+        db.query(
+          'INSERT INTO purchase_history (product_name, paid_price, buyer_name) VALUES ?',
+          [historyData],
+          (histErr) => {
+            if (histErr) console.error('⚠️ purchase_history 기록 실패:', histErr);
+          }
+        );
+
         robotPosition.currentProductId = null;
-        broadcastStockUpdate(); // ✅ 추가
+        broadcastStockUpdate();
 
         if (orderQueue.length > 0) {
           checkAndProcessQueue();
@@ -313,7 +383,7 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
   return res.json({ success: true });
 });
 
-// ✅ 추가 — 웹(Spring Boot)에서 재고 변경 시 호출하는 엔드포인트
+// 웹(Spring Boot)에서 재고 변경 시 호출
 app.post('/api/stock-updated', (req, res) => {
   broadcastStockUpdate();
   res.json({ success: true });
@@ -325,7 +395,6 @@ io.on('connection', (socket) => {
   socket.emit('robot_position', robotPosition);
   socket.emit('queue_updated', orderQueue);
 
-  // ✅ 추가 — 새로 연결된 앱에 현재 재고도 바로 전송
   db.query('SELECT * FROM products', (err, results) => {
     if (!err) socket.emit('stock_updated', { products: results });
   });
@@ -340,6 +409,76 @@ io.on('connection', (socket) => {
       orderQueue.push(newOrder);
       io.emit('queue_updated', orderQueue);
       console.log(`📋 로봇이 바쁩니다. 주문을 대기열에 추가합니다. (총 대기: ${orderQueue.length}개)`);
+    }
+  });
+
+  /* 💬 채팅 이벤트 */
+
+  // 앱 유저 채팅방 입장
+  socket.on('chat_join', ({ userId }) => {
+  userSockets[userId] = socket;
+  db.query(
+    'SELECT * FROM chat_message WHERE user_username = ? ORDER BY created_at ASC',
+    [userId],
+    (err, results) => {
+      if (!err) {
+        const messages = results.map(msg => ({
+          ...msg,
+          fromAdmin: Buffer.isBuffer(msg.from_admin)
+            ? msg.from_admin[0] === 1
+            : Boolean(msg.from_admin)
+        }));
+        socket.emit('chat_history', { messages });
+      }
+    }
+  );
+});
+
+  // 앱 유저가 메시지 전송
+  socket.on('chat_send', ({ userId, content }) => {
+  if (!userId || !content) return;
+
+  db.query(
+    'INSERT INTO chat_message (user_username, content, from_admin, is_read, created_at) VALUES (?, ?, 0, 0, NOW())',
+    [userId, content],
+    (err) => {
+      if (err) { console.error('채팅 저장 실패:', err); return; }
+
+      const time = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+      // ✅ 추가 — 보낸 사람 앱에 echo (오른쪽에 표시)
+      socket.emit('chat_message', {
+        content,
+        fromAdmin: false,
+        time
+      });
+
+      // Spring Boot STOMP로 전달
+      if (stompClient && stompClient.connected) {
+        stompClient.publish({
+          destination: '/app/chat/user/send',
+          body: JSON.stringify({ content }),
+          headers: { login: userId }
+        });
+      }
+    }
+  );
+});
+
+  // 앱 유저 채팅방 퇴장
+  socket.on('chat_leave', ({ userId }) => {
+    delete userSockets[userId];
+    console.log(`💬 [채팅] ${userId} 퇴장`);
+  });
+
+  socket.on('disconnect', () => {
+    // 소켓 끊기면 userSockets에서 제거
+    for (const [userId, s] of Object.entries(userSockets)) {
+      if (s === socket) {
+        delete userSockets[userId];
+        console.log(`💬 [채팅] ${userId} 소켓 끊김`);
+        break;
+      }
     }
   });
 });

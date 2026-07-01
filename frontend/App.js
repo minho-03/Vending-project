@@ -2,20 +2,27 @@ import React, { useState } from 'react';
 import LoginScreen from './screens/LoginScreen';
 import MainScreen from './screens/MainScreen';
 import AdminScreen from './screens/AdminScreen';
+import ChatScreen from './screens/ChatScreen'; // ✅ 문의 → 채팅으로 교체
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [showChat, setShowChat] = useState(false); // ✅ showInquiry → showChat
 
-  // 1. 유저 정보가 없으면 로그인 화면
+  // 1. 로그인 화면
   if (!user) {
     return <LoginScreen setUser={setUser} />;
   }
 
-  // 2. 유저의 role이 'admin'이면 관리자 전용 대시보드 화면
+  // 2. 채팅 화면
+  if (showChat) {
+    return <ChatScreen user={user} onBack={() => setShowChat(false)} />;
+  }
+
+  // 3. 관리자 화면
   if (user.role === 'admin') {
     return <AdminScreen user={user} setUser={setUser} />;
   }
 
-  // 3. 일반 유저면 기존 로봇 관제 메인 화면
-  return <MainScreen user={user} setUser={setUser} />;
+  // 4. 일반 유저 메인 화면
+  return <MainScreen user={user} setUser={setUser} onChat={() => setShowChat(true)} />;
 }
