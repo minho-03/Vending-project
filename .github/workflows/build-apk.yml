@@ -30,7 +30,7 @@ jobs:
 
       - name: Expo Prebuild
         working-directory: ./frontend
-        run: npx expo prebuild -p android --no-interactive
+        run: npx --yes expo prebuild -p android --clean
 
       - name: Build APK
         working-directory: ./frontend/android
