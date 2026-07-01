@@ -516,13 +516,13 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
             </TouchableOpacity>
           </View>
 
-          {/* ✅ 채팅 버튼 (문의하기 대체) */}
-          <TouchableOpacity
-            style={[styles.subButton, { marginTop: 8, flex: 1, width: '100%' }]}
-            onPress={onChat}
-          >
-            <Text style={styles.subButtonText}>💬 고객지원 채팅</Text>
-          </TouchableOpacity>
+          {/* 채팅 버튼 */}
+            <TouchableOpacity
+              style={{ marginTop: 8, width: '100%', backgroundColor: '#faf6f0', paddingVertical: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#e8dfd4' }}
+              onPress={onChat}
+            >
+              <Text style={{ color: '#7a5a3a', fontSize: 13, fontWeight: '600' }}>💬 고객지원 채팅</Text>
+            </TouchableOpacity>
         </View>
 
         <Modal visible={isModalVisible} transparent={true} animationType="fade">

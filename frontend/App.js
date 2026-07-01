@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import LoginScreen from './screens/LoginScreen';
 import MainScreen from './screens/MainScreen';
 import AdminScreen from './screens/AdminScreen';
-import ChatScreen from './screens/ChatScreen'; // ✅ 문의 → 채팅으로 교체
+import ChatScreen from './screens/ChatScreen';
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [showChat, setShowChat] = useState(false); // ✅ showInquiry → showChat
+  const [showChat, setShowChat] = useState(false);
 
   // 1. 로그인 화면
   if (!user) {
