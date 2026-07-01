@@ -100,7 +100,7 @@ export default function ChatScreen({ user, onBack }) {
             keyExtractor={(item, idx) => String(item.id || idx)}
             renderItem={renderMessage}
             contentContainerStyle={styles.msgList}
-            onLayout={() => flatListRef.current?.scrollToEnd({ animated: false })}
+            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
             ListEmptyComponent={
               <View style={styles.emptyBox}>
                 <Text style={styles.emptyText}>아직 대화가 없어요 😊</Text>
