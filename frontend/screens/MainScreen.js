@@ -6,8 +6,8 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.62:4000';
-const ROSBRIDGE_URL = 'ws://192.168.0.51:9090';
+const SERVER_URL = 'http://192.168.0.75:4000';
+const ROSBRIDGE_URL = 'ws://192.168.0.186:9090';
 
 export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry → onChat
   const [status, setStatus] = useState('IDLE');
@@ -30,6 +30,10 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
   const [robotData, setRobotData] = useState({ x: 310, y: 350, heading: 0, path: [], obstacles: [] });
   const [targetPos, setTargetPos] = useState({ x: 310, y: 350 });
 
+  // 🗺️ [추가] /map 토픽으로 받은 실제 맵 데이터 (occupancy grid)
+  const [mapData, setMapData] = useState(null);
+  const [webViewReady, setWebViewReady] = useState(false);
+
   const socketRef = useRef(null);
   const webViewRef = useRef(null); 
   
@@ -37,6 +41,13 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
   useEffect(() => {
     targetPosRef.current = targetPos;
   }, [targetPos]);
+
+  // 🗺️ [추가] 맵 데이터 + WebView 둘 다 준비되면 WebView로 전달
+  useEffect(() => {
+    if (mapData && webViewReady && webViewRef.current) {
+      webViewRef.current.postMessage(JSON.stringify({ type: 'MAP_DATA', map: mapData }));
+    }
+  }, [mapData, webViewReady]);
 
   // --- 🌐 관제 맵 HTML/CSS 설정 ---
   const mapHtml = `
@@ -56,9 +67,84 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
         const canvas = document.getElementById('mapCanvas');
         const ctx = canvas.getContext('2d');
 
-        const mapImg = new Image();
-        mapImg.crossOrigin = "Anonymous";
-        mapImg.src = 'http://192.168.0.49:4000/assets/test_map.png';
+        // 🗺️ [추가] /map 데이터를 그려둘 오프스크린 캔버스 (한 번 그려두고 계속 재사용)
+        const mapOffscreen = document.createElement('canvas');
+        let mapReady = false;
+        let mapCentered = false;
+        let mapInfo = { width: 384, height: 384, resolution: 0.05, origin: { x: -10, y: -10 } };
+
+        function loadMapData(map) {
+          mapInfo = { width: map.width, height: map.height, resolution: map.resolution, origin: map.origin };
+
+          mapOffscreen.width = map.width;
+          mapOffscreen.height = map.height;
+          const octx = mapOffscreen.getContext('2d');
+          const imageData = octx.createImageData(map.width, map.height);
+          const src = map.data;
+
+          // 🔍 [추가] 실제 맵 영역(unknown이 아닌 부분)의 경계를 계산하기 위한 변수
+          let minCol = map.width, maxCol = 0, minRow = map.height, maxRow = 0;
+          let hasKnownArea = false;
+
+          for (let row = 0; row < map.height; row++) {
+            for (let col = 0; col < map.width; col++) {
+              const srcIdx = row * map.width + col;
+              const val = src[srcIdx];
+              let r, g, b;
+              if (val === -1) { r = 180; g = 180; b = 180; }
+              else {
+                hasKnownArea = true;
+                if (col < minCol) minCol = col;
+                if (col > maxCol) maxCol = col;
+                if (row < minRow) minRow = row;
+                if (row > maxRow) maxRow = row;
+
+                if (val === 0) { r = 255; g = 255; b = 255; }
+                else { r = 0; g = 0; b = 0; }
+              }
+
+              const canvasRow = map.height - 1 - row;
+              const destIdx = (canvasRow * map.width + col) * 4;
+              imageData.data[destIdx] = r;
+              imageData.data[destIdx + 1] = g;
+              imageData.data[destIdx + 2] = b;
+              imageData.data[destIdx + 3] = 255;
+            }
+          }
+          octx.putImageData(imageData, 0, 0);
+          mapReady = true;
+
+          // 🔍 [추가] 실제 방 영역에 맞춰 카메라 확대/중앙정렬
+          if (!mapCentered && canvas.width > 0) {
+            if (hasKnownArea) {
+              // row는 세로로 뒤집혀 있으니 캔버스 기준 y범위로 변환
+              const contentMinX = minCol;
+              const contentMaxX = maxCol;
+              const contentMinY = map.height - 1 - maxRow;
+              const contentMaxY = map.height - 1 - minRow;
+
+              const contentWidth = (contentMaxX - contentMinX) || 1;
+              const contentHeight = (contentMaxY - contentMinY) || 1;
+              const contentCenterX = (contentMinX + contentMaxX) / 2;
+              const contentCenterY = (contentMinY + contentMaxY) / 2;
+
+              // 여백을 좀 두고(0.7배) 캔버스에 꽉 차게 스케일 계산
+              const padding = 0.6;
+              const scaleX = (canvas.width * padding) / contentWidth;
+              const scaleY = (canvas.height * padding) / contentHeight;
+              camera.scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.4), 4);
+
+              camera.x = (canvas.width / 2) - (contentCenterX * camera.scale);
+              camera.y = (canvas.height / 2) - (contentCenterY * camera.scale);
+            } else {
+              // 알려진 영역이 없으면 기존 방식대로 전체 맵 중앙
+              camera.x = (canvas.width / 2) - (map.width / 2);
+              camera.y = (canvas.height / 2) - (map.height / 2);
+            }
+            mapCentered = true;
+            camera.isCentered = true;
+          }
+        }
 
         let currentRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
         let targetRobot = { x: 310, y: 350, heading: -Math.PI / 2 };
@@ -77,9 +163,11 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
           canvas.height = window.innerHeight || 300;
 
           if (!camera.isCentered && canvas.width > 0) {
-            camera.x = (canvas.width / 2) - 310;
-            camera.y = (canvas.height / 2) - 350;
+            // 맵 데이터가 아직 안 왔을 때의 기본 중앙 정렬 (임시)
+            camera.x = (canvas.width / 2) - (mapInfo.width / 2);
+            camera.y = (canvas.height / 2) - (mapInfo.height / 2);
             camera.isCentered = true;
+            mapCentered = true;
           }
         }
         window.addEventListener('resize', resize);
@@ -88,6 +176,12 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
         function handleMessage(event) {
           try {
             const newData = JSON.parse(event.data);
+
+            if (newData.type === 'MAP_DATA') {
+              loadMapData(newData.map);
+              return;
+            }
+
             targetRobot.x = newData.x ?? targetRobot.x;
             targetRobot.y = newData.y ?? targetRobot.y;
             targetRobot.heading = newData.heading ?? targetRobot.heading;
@@ -193,10 +287,11 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
           ctx.scale(camera.scale, camera.scale);
           ctx.rotate(camera.rotation);
 
-          if (mapImg.complete) {
-            ctx.globalAlpha = 0.8; 
-            ctx.drawImage(mapImg, 0, 0, 600, 600); 
-            ctx.globalAlpha = 1.0; 
+          // 🗺️ [수정] 정적 이미지 대신 /map 데이터를 그린 오프스크린 캔버스를 그대로 사용
+          if (mapReady) {
+            ctx.globalAlpha = 0.9;
+            ctx.drawImage(mapOffscreen, 0, 0, mapInfo.width, mapInfo.height);
+            ctx.globalAlpha = 1.0;
           }
 
           const gridSize = 50;
@@ -232,22 +327,26 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
           }
 
           ctx.fillStyle = '#f97316'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 / camera.scale;
-          ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 6 / camera.scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           ctx.strokeStyle = 'rgba(249, 115, 22, 0.3)';
-          ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 12, 0, Math.PI * 2); ctx.stroke();
+          ctx.beginPath(); ctx.arc(state.targetX, state.targetY, 12 / camera.scale, 0, Math.PI * 2); ctx.stroke();
 
           ctx.save();
           ctx.translate(currentRobot.x, currentRobot.y);
           ctx.rotate(currentRobot.heading);
 
           ctx.fillStyle = '#c47d4a'; ctx.strokeStyle = '#3d2c1e'; ctx.lineWidth = 2 / camera.scale;
-          ctx.beginPath(); ctx.arc(0, 0, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, 13 / camera.scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
           ctx.fillStyle = '#3d2c1e';
-          ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(3, -6); ctx.lineTo(3, 6); ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(15 / camera.scale, 0);
+          ctx.lineTo(3 / camera.scale, -6 / camera.scale);
+          ctx.lineTo(3 / camera.scale, 6 / camera.scale);
+          ctx.fill();
 
           ctx.strokeStyle = 'rgba(196, 125, 74, 0.15)'; ctx.lineWidth = 1 / camera.scale;
-          ctx.beginPath(); ctx.arc(0, 0, 50, 0, Math.PI * 2); ctx.setLineDash([2, 4]); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, 50 / camera.scale, 0, Math.PI * 2); ctx.setLineDash([2, 4]); ctx.stroke();
 
           ctx.restore();
           ctx.restore();
@@ -264,6 +363,11 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
   // --- 소켓 및 ROS 설정 ---
   useEffect(() => {
     socketRef.current = io(SERVER_URL);
+
+    // 🗺️ [추가] /map 데이터 수신 (서버가 최초 1회 받아서 캐싱해둔 걸 여기서 받음)
+    socketRef.current.on('map_data', (data) => {
+      setMapData(data);
+    });
 
     socketRef.current.on('stock_updated', (data) => {
       setProducts(data.products);
@@ -486,6 +590,7 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
             originWhitelist={['*']}
             source={{ html: mapHtml }}
             onMessage={handleWebViewMessage}
+            onLoadEnd={() => setWebViewReady(true)}
             style={{ flex: 1, backgroundColor: 'transparent' }} 
             scrollEnabled={false}
             javaScriptEnabled={true}

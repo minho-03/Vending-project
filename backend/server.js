@@ -40,16 +40,44 @@ let intervalId = null;
 // 📋 주문 대기열
 let orderQueue = [];
 
-// 🗺️ 좌표 변환 상수
+// 🗺️ [기본값] /map 토픽을 아직 못 받았을 때 쓰는 폴백 상수 (map_first.yaml 기준)
 const RESOLUTION = 0.05;
 const ORIGIN_X = -10.0;
 const ORIGIN_Y = -10.0;
+const MAP_WIDTH_PIXELS = 384;
 const MAP_HEIGHT_PIXELS = 384;
-const OFFSET_X = 190;
-const OFFSET_Y = 127;
 
-// 🏠 홈 기지 픽셀 좌표
-const HOME_POS = { x: 200 + OFFSET_X, y: 184 + OFFSET_Y };
+// 🗺️ /map 토픽에서 받은 실제 맵 데이터 캐싱 (한 번만 받고 재사용)
+let cachedMapData = null;
+
+// 🏠 홈 기지 픽셀 좌표 (실측 후 필요 시 재조정)
+const HOME_POS = { x: 200, y: 184 };
+
+// 🚙 앱 픽셀 -> ROS 미터 변환 함수 (목적지 전송용)
+// ✅ /map 데이터를 그대로 캔버스에 그리기 때문에 더 이상 90도 스왑 트릭이 필요 없음
+//    픽셀 X = 격자 col, 픽셀 Y = (height - 격자 row) 로 1:1 매핑
+function pixelToRos(pixelX, pixelY) {
+  const resolution = cachedMapData ? cachedMapData.resolution : RESOLUTION;
+  const originX = cachedMapData ? cachedMapData.origin.x : ORIGIN_X;
+  const originY = cachedMapData ? cachedMapData.origin.y : ORIGIN_Y;
+  const height = cachedMapData ? cachedMapData.height : MAP_HEIGHT_PIXELS;
+
+  const rosX = originX + (pixelX * resolution);
+  const rosY = originY + ((height - pixelY) * resolution);
+  return { x: rosX, y: rosY };
+}
+
+// 📍 ROS 미터 -> 앱 픽셀 변환 함수 (오돔 위치 수신용)
+function rosToPixel(rosX, rosY) {
+  const resolution = cachedMapData ? cachedMapData.resolution : RESOLUTION;
+  const originX = cachedMapData ? cachedMapData.origin.x : ORIGIN_X;
+  const originY = cachedMapData ? cachedMapData.origin.y : ORIGIN_Y;
+  const height = cachedMapData ? cachedMapData.height : MAP_HEIGHT_PIXELS;
+
+  const pixelX = (rosX - originX) / resolution;
+  const pixelY = height - ((rosY - originY) / resolution);
+  return { x: pixelX, y: pixelY };
+}
 
 // 📦 재고 변경 시 앱에 브로드캐스트하는 공통 함수
 function broadcastStockUpdate() {
@@ -124,10 +152,9 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
   robotPosition.currentProductId = productId;
   robotPosition.path = [];
 
-  const realPixelX = targetPos.x - OFFSET_X;
-  const realPixelY = targetPos.y - OFFSET_Y;
-  const rosTargetX = ((MAP_HEIGHT_PIXELS - realPixelY) * RESOLUTION) + ORIGIN_X;
-  const rosTargetY = (realPixelX * RESOLUTION) + ORIGIN_Y;
+  const rosPos = pixelToRos(targetPos.x, targetPos.y);
+  const rosTargetX = rosPos.x;
+  const rosTargetY = rosPos.y;
 
   console.log(`🎯 [목적지 전송] 터치(${Math.round(targetPos.x)}, ${Math.round(targetPos.y)}) -> ROS(${rosTargetX.toFixed(2)}m, ${rosTargetY.toFixed(2)}m)`);
 
@@ -160,11 +187,11 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
       return;
     }
 
-    const dx = targetPos.x - robotPosition.x;
-    const dy = targetPos.y - robotPosition.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    const distDx = targetPos.x - robotPosition.x;
+    const distDy = targetPos.y - robotPosition.y;
+    const distance = Math.sqrt(distDx * distDx + distDy * distDy);
 
-    if (distance < 25) {
+    if (distance < 4) {
       clearInterval(intervalId);
       intervalId = null;
 
@@ -194,29 +221,67 @@ function checkAndProcessQueue() {
 /* 📡 --- ROSbridge 웹소켓 연동 (자동 재연결 포함) --- */
 
 function connectRosBridge() {
-  const ws = new WebSocket('ws://192.168.0.51:9090');
+  const ws = new WebSocket('ws://192.168.0.186:9090');
 
   ws.on('open', () => {
     console.log('🟩 [ROSbridge] 로봇 라즈베리파이와 연결되었습니다!');
     ws.send(JSON.stringify({ op: 'subscribe', topic: '/odom', type: 'nav_msgs/Odometry' }));
     ws.send(JSON.stringify({ op: 'advertise', topic: '/move_base_simple/goal', type: 'geometry_msgs/PoseStamped' }));
+
+    // 🗺️ /map은 한 번만 받으면 되므로 아직 캐싱 안 됐을 때만 구독
+    if (!cachedMapData) {
+      ws.send(JSON.stringify({ op: 'subscribe', topic: '/map', type: 'nav_msgs/OccupancyGrid' }));
+      console.log('🗺️ [ROSbridge] /map 토픽 구독 시작 (최초 1회)');
+    }
   });
 
   ws.on('message', (data) => {
     try {
       const rawData = JSON.parse(data);
+
       if (rawData.op === 'publish' && rawData.topic === '/odom') {
         const msg = rawData.msg;
         const rosX = msg.pose.pose.position.x;
         const rosY = msg.pose.pose.position.y;
         const q = msg.pose.pose.orientation;
         const heading = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
-        const mapPixelX = (rosY - ORIGIN_Y) / RESOLUTION;
-        const mapPixelY = MAP_HEIGHT_PIXELS - ((rosX - ORIGIN_X) / RESOLUTION);
-        robotPosition.x = mapPixelX + OFFSET_X;
-        robotPosition.y = mapPixelY + OFFSET_Y;
-        robotPosition.heading = heading - (Math.PI / 2);
+
+        // 로봇의 현재 속도 확인
+        const linearVel = msg.twist.twist.linear;
+        const currentSpeed = Math.sqrt(linearVel.x * linearVel.x + linearVel.y * linearVel.y);
+        robotPosition.currentSpeed = currentSpeed;
+
+        const pixelPos = rosToPixel(rosX, rosY);
+        robotPosition.x = pixelPos.x;
+        robotPosition.y = pixelPos.y;
+
+        robotPosition.heading = heading;
+
         io.emit('robot_position', robotPosition);
+      }
+
+      // 🗺️ /map 토픽 최초 1회 수신 처리
+      if (rawData.op === 'publish' && rawData.topic === '/map' && !cachedMapData) {
+        const mapMsg = rawData.msg;
+        cachedMapData = {
+          width: mapMsg.info.width,
+          height: mapMsg.info.height,
+          resolution: mapMsg.info.resolution,
+          origin: {
+            x: mapMsg.info.origin.position.x,
+            y: mapMsg.info.origin.position.y
+          },
+          data: mapMsg.data
+        };
+
+        console.log(`🗺️ [ROSbridge] /map 데이터 수신 완료! (${cachedMapData.width}x${cachedMapData.height}, resolution: ${cachedMapData.resolution})`);
+
+        // 이미 연결된 앱 클라이언트들에게 즉시 전송
+        io.emit('map_data', cachedMapData);
+
+        // 구독 해제 (더 이상 필요 없음)
+        ws.send(JSON.stringify({ op: 'unsubscribe', topic: '/map' }));
+        console.log('🗺️ [ROSbridge] /map 구독 해제 완료 (캐싱된 데이터 재사용)');
       }
     } catch (err) {
       console.error('⚠️ [ROS 데이터 파싱 오류]:', err);
@@ -318,14 +383,13 @@ app.post('/api/products/purchase-complete', (req, res) => {
           return res.status(500).json({ success: false });
         }
 
-        // purchase_history에도 기록
         const historyData = [];
         for (let i = 0; i < targetQuantity; i++) {
           historyData.push([productName, productPrice, buyerName]);
         }
         db.query(
-          'INSERT INTO purchase_history (product_name, paid_price, buyer_name) VALUES ?',
-          [historyData],
+          'INSERT INTO purchase_history (product_name, paid_price, buyer_name, isUsed) VALUES (?, ?, ?, 0)',
+          [productName, productPrice, buyerName],
           (histErr) => {
             if (histErr) console.error('⚠️ purchase_history 기록 실패:', histErr);
           }
@@ -383,7 +447,6 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
   return res.json({ success: true });
 });
 
-// 웹(Spring Boot)에서 재고 변경 시 호출
 app.post('/api/stock-updated', (req, res) => {
   broadcastStockUpdate();
   res.json({ success: true });
@@ -394,6 +457,11 @@ app.post('/api/stock-updated', (req, res) => {
 io.on('connection', (socket) => {
   socket.emit('robot_position', robotPosition);
   socket.emit('queue_updated', orderQueue);
+
+  // 🗺️ 이미 캐싱된 맵 데이터가 있으면 새로 연결된 앱에도 바로 전송
+  if (cachedMapData) {
+    socket.emit('map_data', cachedMapData);
+  }
 
   db.query('SELECT * FROM products', (err, results) => {
     if (!err) socket.emit('stock_updated', { products: results });
@@ -413,66 +481,59 @@ io.on('connection', (socket) => {
   });
 
   /* 💬 채팅 이벤트 */
-
-  // 앱 유저 채팅방 입장
   socket.on('chat_join', ({ userId }) => {
-  userSockets[userId] = socket;
-  db.query(
-    'SELECT * FROM chat_message WHERE user_username = ? ORDER BY created_at ASC',
-    [userId],
-    (err, results) => {
-      if (!err) {
-        const messages = results.map(msg => ({
-          ...msg,
-          fromAdmin: Buffer.isBuffer(msg.from_admin)
-            ? msg.from_admin[0] === 1
-            : Boolean(msg.from_admin)
-        }));
-        socket.emit('chat_history', { messages });
+    userSockets[userId] = socket;
+    db.query(
+      'SELECT * FROM chat_message WHERE user_username = ? ORDER BY created_at ASC',
+      [userId],
+      (err, results) => {
+        if (!err) {
+          const messages = results.map(msg => ({
+            ...msg,
+            fromAdmin: Buffer.isBuffer(msg.from_admin)
+              ? msg.from_admin[0] === 1
+              : Boolean(msg.from_admin)
+          }));
+          socket.emit('chat_history', { messages });
+        }
       }
-    }
-  );
-});
+    );
+  });
 
-  // 앱 유저가 메시지 전송
   socket.on('chat_send', ({ userId, content }) => {
-  if (!userId || !content) return;
+    if (!userId || !content) return;
 
-  db.query(
-    'INSERT INTO chat_message (user_username, content, from_admin, is_read, created_at) VALUES (?, ?, 0, 0, NOW())',
-    [userId, content],
-    (err) => {
-      if (err) { console.error('채팅 저장 실패:', err); return; }
+    db.query(
+      'INSERT INTO chat_message (user_username, content, from_admin, is_read, created_at) VALUES (?, ?, 0, 0, NOW())',
+      [userId, content],
+      (err) => {
+        if (err) { console.error('채팅 저장 실패:', err); return; }
 
-      const time = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const time = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
 
-      // ✅ 추가 — 보낸 사람 앱에 echo (오른쪽에 표시)
-      socket.emit('chat_message', {
-        content,
-        fromAdmin: false,
-        time
-      });
-
-      // Spring Boot STOMP로 전달
-      if (stompClient && stompClient.connected) {
-        stompClient.publish({
-          destination: '/app/chat/user/send',
-          body: JSON.stringify({ content }),
-          headers: { login: userId }
+        socket.emit('chat_message', {
+          content,
+          fromAdmin: false,
+          time
         });
-      }
-    }
-  );
-});
 
-  // 앱 유저 채팅방 퇴장
+        if (stompClient && stompClient.connected) {
+          stompClient.publish({
+            destination: '/app/chat/user/send',
+            body: JSON.stringify({ content }),
+            headers: { login: userId }
+          });
+        }
+      }
+    );
+  });
+
   socket.on('chat_leave', ({ userId }) => {
     delete userSockets[userId];
     console.log(`💬 [채팅] ${userId} 퇴장`);
   });
 
   socket.on('disconnect', () => {
-    // 소켓 끊기면 userSockets에서 제거
     for (const [userId, s] of Object.entries(userSockets)) {
       if (s === socket) {
         delete userSockets[userId];
