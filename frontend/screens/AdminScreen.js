@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Alert, RefreshControl, TextInput, StyleSheet } from 'react-native';
 import styles from '../styles/AdminStyles';
 
-const SERVER_URL = 'http://192.168.0.75:4000';
+const SERVER_URL = 'http://192.168.0.70:4000';
 
 export default function AdminScreen({ user, setUser }) {
   const [products, setProducts] = useState([]);
@@ -141,31 +141,30 @@ export default function AdminScreen({ user, setUser }) {
     );
   };
 
-  // 🚨 [신규 추가] 로봇 원격 강제 리셋 제어 함수
+  // 로봇 원격 강제 리셋 제어 함수
   const handleForceReset = () => {
-    Alert.alert(
-      "🚨 긴급 마스터 제어",
-      "로봇의 주행 스케줄을 즉시 중단하고 대기 상태 및 홈 위치(50, 50)로 원격 복귀시키겠습니까? (배터리도 완충됩니다)",
-      [
-        { text: "취소", style: "cancel" },
-        { 
-          text: "강제 리셋 실행", 
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const response = await fetch(`${SERVER_URL}/api/admin/robot/force-reset`, { method: 'POST' });
-              const data = await response.json();
-              if (data.success) {
-                Alert.alert("제어 성공", "배송 로봇 하드웨어가 원격 리셋되었습니다.");
-              }
-            } catch (error) {
-              Alert.alert("오류", "서버와 강제 제어 통신 실패");
+  Alert.alert(
+    "🏠 홈 복귀",
+    "로봇을 즉시 홈 기지로 복귀시키겠습니까?",
+    [
+      { text: "취소", style: "cancel" },
+      { 
+        text: "홈 복귀", 
+        onPress: async () => {
+          try {
+            const response = await fetch(`${SERVER_URL}/api/admin/robot/force-reset`, { method: 'POST' });
+            const data = await response.json();
+            if (data.success) {
+              Alert.alert("완료", "로봇이 홈 기지로 복귀합니다.");
             }
+          } catch (error) {
+            Alert.alert("오류", "서버와 통신 실패");
           }
         }
-      ]
-    );
-  };
+      }
+    ]
+  );
+};
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -266,8 +265,8 @@ export default function AdminScreen({ user, setUser }) {
           ))}
           
           {/* 🚨 [신규 추가] 비상 위기 대응 마스터 강제 제어 버튼 */}
-          <TouchableOpacity style={localStyles.dangerButton} onPress={handleForceReset}>
-            <Text style={localStyles.dangerButtonText}>🚨 로봇 시스템 강제 리셋 & 홈 복귀 명령</Text>
+          <TouchableOpacity style={localStyles.homeButton} onPress={handleForceReset}>
+            <Text style={localStyles.homeButtonText}>🚨 로봇 긴급 홈 복귀</Text>
           </TouchableOpacity>
 
           <Text style={styles.footerTip}>화면을 아래로 당기면 새로고침 됩니다.</Text>
@@ -289,6 +288,6 @@ const localStyles = StyleSheet.create({
   statsValue: { color: '#2c3e50', fontSize: 18, fontWeight: 'bold', marginTop: 2 },
   
   // 🚨 긴급 마스터 비상 버튼 디자인
-  dangerButton: { backgroundColor: '#e74c3c', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 20, marginBottom: 5, shadowColor: '#e74c3c', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  dangerButtonText: { color: '#fff', fontWeight: '800', fontSize: 14 }
+  homeButton: { backgroundColor: '#3d2c1e', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 20, marginBottom: 5 },
+  homeButtonText: { color: '#fff', fontWeight: '800', fontSize: 14 }
 });
