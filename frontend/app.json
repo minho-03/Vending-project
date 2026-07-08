@@ -20,13 +20,19 @@
         "foregroundImage": "./assets/logo_PIMTO.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.anonymous.PIMTO"
     },
     "web": {
       "favicon": "./assets/logo_PIMTO.png"
     },
     "plugins": [
       "expo-web-browser"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a4760cca-0098-4cfd-b92c-89019c11f65d"
+      }
+    }
   }
 }
