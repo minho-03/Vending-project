@@ -191,7 +191,7 @@ function driveRobotTo(targetPos, productId, isReturn = false) {
     const distDy = targetPos.y - robotPosition.y;
     const distance = Math.sqrt(distDx * distDx + distDy * distDy);
 
-    if (distance < 4) {
+    if (distance < 5) {
       clearInterval(intervalId);
       intervalId = null;
 
@@ -303,6 +303,30 @@ function connectRosBridge() {
 let rosWs = connectRosBridge();
 
 /* --- API 라우터 --- */
+
+app.get('/api/robot/status', (req, res) => {
+  res.json({
+    status: robotPosition.status,
+    productId: robotPosition.currentProductId
+  });
+});
+
+// 웹(Spring Boot)에서 주문 발생 시 호출할 API
+app.post('/api/web/call-robot', (req, res) => {
+  const { targetPos, productId } = req.body;
+  const newOrder = { targetPos, productId };
+
+  if (['IDLE', 'RETURNING', 'ARRIVED'].includes(robotPosition.status)) {
+    console.log(`🛒 [웹 주문] 로봇이 즉시 처리하러 출발합니다. (현재 상태: ${robotPosition.status})`);
+    driveRobotTo(targetPos, productId, false);
+  } else {
+    orderQueue.push(newOrder);
+    io.emit('queue_updated', orderQueue);
+    console.log(`📋 [웹 주문] 로봇이 바쁩니다. 대기열에 추가합니다. (총 대기: ${orderQueue.length}개)`);
+  }
+
+  return res.json({ success: true, queued: orderQueue.length });
+});
 
 app.post('/api/signup', (req, res) => {
   const { userId, password, name } = req.body;
@@ -443,7 +467,7 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
   robotPosition.path = [];
   robotPosition.obstacles = [];
   io.emit('robot_position', robotPosition);
-  console.log('🚨 [ADMIN COMMAND] 로봇 긴급 정지 및 주문 대기열 초기화 완료!');
+  console.log('🚨 [ADMIN COMMAND] 로봇 긴급 호출 및 주문 대기열 초기화 완료!');
   return res.json({ success: true });
 });
 
