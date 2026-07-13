@@ -49,6 +49,19 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
     }
   }, [mapData, webViewReady]);
 
+  // 🎫 PIN 형식(XXXX-XXXX) 문자열 생성 함수
+  function generatePinCode() {
+    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const randomPart = (len) => {
+      let result = '';
+      for (let i = 0; i < len; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    };
+    return `${randomPart(4)}-${randomPart(4)}`;
+  }
+
   // --- 🌐 관제 맵 HTML/CSS 설정 ---
   const mapHtml = `
     <!DOCTYPE html>
@@ -485,7 +498,7 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
             setQrList([combinedQrData]); 
             setCurrentQrIndex(0);    
             setModalVisible(true); 
-          } 
+          }
         }
       ]);
     }
