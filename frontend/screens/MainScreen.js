@@ -1,5 +1,5 @@
 // frontend/screens/MainScreen.js
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, TouchableOpacity, Text, SafeAreaView, Alert, Modal, Vibration, ScrollView } from 'react-native';
 import { WebView } from 'react-native-webview'; 
 import { io } from 'socket.io-client';
@@ -49,21 +49,9 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
     }
   }, [mapData, webViewReady]);
 
-  // 🎫 PIN 형식(XXXX-XXXX) 문자열 생성 함수
-  function generatePinCode() {
-    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const randomPart = (len) => {
-      let result = '';
-      for (let i = 0; i < len; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-      return result;
-    };
-    return `${randomPart(4)}-${randomPart(4)}`;
-  }
 
   // --- 🌐 관제 맵 HTML/CSS 설정 ---
-  const mapHtml = `
+  const mapHtml = useMemo(() => `
     <!DOCTYPE html>
     <html>
     <head>
@@ -142,7 +130,7 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
               const contentCenterY = (contentMinY + contentMaxY) / 2;
 
               // 여백을 좀 두고(0.7배) 캔버스에 꽉 차게 스케일 계산
-              const padding = 0.6;
+              const padding = 0.7;
               const scaleX = (canvas.width * padding) / contentWidth;
               const scaleY = (canvas.height * padding) / contentHeight;
               camera.scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.4), 4);
@@ -371,7 +359,7 @@ export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry
       </script>
     </body>
     </html>
-`;
+`, []);
 
   // --- 소켓 및 ROS 설정 ---
   useEffect(() => {

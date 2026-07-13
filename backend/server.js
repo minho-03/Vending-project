@@ -458,16 +458,10 @@ app.post('/api/admin/robot/force-reset', (req, res) => {
   if (intervalId) { clearInterval(intervalId); intervalId = null; }
   orderQueue = [];
   io.emit('queue_updated', orderQueue);
-  robotPosition.x = HOME_POS.x;
-  robotPosition.y = HOME_POS.y;
-  robotPosition.heading = 0;
-  robotPosition.status = 'IDLE';
-  robotPosition.battery = 100;
-  robotPosition.currentProductId = null;
-  robotPosition.path = [];
-  robotPosition.obstacles = [];
-  io.emit('robot_position', robotPosition);
-  console.log('🚨 [ADMIN COMMAND] 로봇 긴급 호출 및 주문 대기열 초기화 완료!');
+
+  console.log('🏠 [ADMIN COMMAND] 로봇 홈 복귀 명령 전송!');
+  driveRobotTo(HOME_POS, null, true);
+
   return res.json({ success: true });
 });
 
