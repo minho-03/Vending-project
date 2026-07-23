@@ -6,8 +6,8 @@ import { io } from 'socket.io-client';
 import QRCode from 'react-native-qrcode-svg';
 import styles from '../styles/MainStyles';
 
-const SERVER_URL = 'http://192.168.0.70:4000';
-const ROSBRIDGE_URL = 'ws://192.168.0.186:9090';
+const SERVER_URL = 'http://192.168.0.xx:4000';
+const ROSBRIDGE_URL = 'ws://192.168.0.xx:9090';
 
 export default function MainScreen({ user, setUser, onChat }) { // ✅ onInquiry → onChat
   const [status, setStatus] = useState('IDLE');

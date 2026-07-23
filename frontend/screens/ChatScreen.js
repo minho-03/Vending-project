@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { io } from 'socket.io-client';
 
-const SERVER_URL = 'http://192.168.0.70:4000';
+const SERVER_URL = 'http://192.168.0.xx:4000';
 
 export default function ChatScreen({ user, onBack }) {
   const [messages, setMessages] = useState([]);
